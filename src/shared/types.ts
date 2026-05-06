@@ -53,16 +53,12 @@ export type CodexModelSummary = {
   }>;
 };
 
-export type CodexSettingsScope = "chat" | "session" | "nextTurn";
+export type CodexSettingsScope = "chat" | "nextTurn";
 
 export type CodexSettings = {
   chatModel: string | null;
   chatReasoningEffort: ReasoningEffort | null;
   chatPermissionMode: CodexPermissionMode;
-  /** Compatibility aliases for older renderer/voice callers. */
-  sessionModel: string | null;
-  sessionReasoningEffort: ReasoningEffort | null;
-  sessionPermissionMode: CodexPermissionMode;
   nextTurnModel: string | null;
   nextTurnReasoningEffort: ReasoningEffort | null;
   nextTurnPermissionMode: CodexPermissionMode | null;
@@ -89,7 +85,7 @@ export type VoiceChat = {
   lastStatus: string | null;
 };
 
-export type VoiceSession = {
+export type VoiceProject = {
   id: string;
   displayName: string;
   folderPath: string;
@@ -122,7 +118,7 @@ export type CodexChatRuntime = {
 
 export type CodexRuntimeState = {
   ready: boolean;
-  activeSessionId: string | null;
+  activeProjectId: string | null;
   activeChatId: string | null;
   activeTurnId: string | null;
   status: string;
@@ -130,7 +126,7 @@ export type CodexRuntimeState = {
   tokenUsage: CodexThreadTokenUsage | null;
   pendingRequests: PendingCodexRequest[];
   chats: CodexChatRuntime[];
-  showSessionChats: boolean;
+  showProjectChats: boolean;
 };
 
 export type CodexTokenUsageBreakdown = {
@@ -178,9 +174,9 @@ export type PendingCodexRequest = {
   kind: PendingRequestKind;
   requestId: number | string;
   method: string;
-  sessionId?: string;
+  projectId?: string;
+  projectName?: string;
   chatId?: string;
-  sessionName?: string;
   chatName?: string;
   threadId?: string;
   turnId?: string;
@@ -196,9 +192,9 @@ export type PendingCodexRequest = {
 
 export type AppState = {
   baseFolder: string;
-  sessions: VoiceSession[];
-  archivedSessions: VoiceSession[];
-  activeSession: VoiceSession | null;
+  projects: VoiceProject[];
+  archivedProjects: VoiceProject[];
+  activeProject: VoiceProject | null;
   runtime: CodexRuntimeState;
   codexSettings: CodexSettings;
   realtime: {
@@ -215,7 +211,7 @@ export type CodexActionResult = {
   kind: "turn" | "command";
   message: string;
   turnId: string | null;
-  session: VoiceSession | null;
+  project: VoiceProject | null;
   chat: VoiceChat | null;
 };
 
@@ -247,17 +243,17 @@ export type CodexVoiceApi = {
   getEvents(): Promise<AppEvent[]>;
   clearEvents(): Promise<void>;
   logEvent(event: AppEvent): Promise<void>;
-  createSession(name?: string): Promise<VoiceSession>;
-  resumeSession(sessionId: string): Promise<VoiceSession>;
-  archiveSession(sessionId: string): Promise<VoiceSession>;
-  restoreSession(sessionId: string): Promise<VoiceSession>;
-  createChat(name: string, sessionId?: string): Promise<VoiceSession>;
-  switchChat(chatId: string, sessionId?: string): Promise<VoiceSession>;
-  archiveChat(chatId: string, sessionId?: string): Promise<VoiceSession>;
-  restoreChat(chatId: string, sessionId?: string): Promise<VoiceSession>;
-  listChats(sessionId?: string): Promise<VoiceChat[]>;
-  showSessionChats(open?: boolean): Promise<void>;
-  summarizeSession(sessionId?: string, chatId?: string): Promise<string>;
+  createProject(name?: string): Promise<VoiceProject>;
+  resumeProject(projectId: string): Promise<VoiceProject>;
+  archiveProject(projectId: string): Promise<VoiceProject>;
+  restoreProject(projectId: string): Promise<VoiceProject>;
+  createChat(name: string, projectId?: string): Promise<VoiceProject>;
+  switchChat(chatId: string, projectId?: string): Promise<VoiceProject>;
+  archiveChat(chatId: string, projectId?: string): Promise<VoiceProject>;
+  restoreChat(chatId: string, projectId?: string): Promise<VoiceProject>;
+  listChats(projectId?: string): Promise<VoiceChat[]>;
+  showProjectChats(open?: boolean): Promise<void>;
+  summarizeProject(projectId?: string, chatId?: string): Promise<string>;
   sendToCodex(text: string, chatId?: string): Promise<CodexActionResult>;
   steerCodex(text: string, chatId?: string): Promise<{ turnId: string }>;
   interruptCodex(chatId?: string): Promise<void>;

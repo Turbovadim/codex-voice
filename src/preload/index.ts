@@ -16,22 +16,26 @@ const api: CodexVoiceApi = {
   getEvents: () => ipcRenderer.invoke("app:getEvents"),
   clearEvents: () => ipcRenderer.invoke("app:clearEvents"),
   logEvent: (event: AppEvent) => ipcRenderer.invoke("app:logEvent", event),
-  createSession: (name?: string) => ipcRenderer.invoke("sessions:create", { name }),
-  resumeSession: (sessionId: string) => ipcRenderer.invoke("sessions:resume", { sessionId }),
-  archiveSession: (sessionId: string) => ipcRenderer.invoke("sessions:archive", { sessionId }),
-  restoreSession: (sessionId: string) => ipcRenderer.invoke("sessions:restore", { sessionId }),
-  createChat: (name: string, sessionId?: string) => ipcRenderer.invoke("chats:create", { name, sessionId }),
-  switchChat: (chatId: string, sessionId?: string) => ipcRenderer.invoke("chats:switch", { chatId, sessionId }),
-  archiveChat: (chatId: string, sessionId?: string) => ipcRenderer.invoke("chats:archive", { chatId, sessionId }),
-  restoreChat: (chatId: string, sessionId?: string) => ipcRenderer.invoke("chats:restore", { chatId, sessionId }),
-  listChats: (sessionId?: string) => ipcRenderer.invoke("chats:list", { sessionId }),
-  showSessionChats: (open?: boolean) => ipcRenderer.invoke("chats:show", { open }),
-  summarizeSession: (sessionId?: string, chatId?: string) =>
-    ipcRenderer.invoke("sessions:summarize", { sessionId, chatId }),
+  createProject: (name?: string) => ipcRenderer.invoke("projects:create", { name }),
+  resumeProject: (projectId: string) => ipcRenderer.invoke("projects:resume", { projectId }),
+  archiveProject: (projectId: string) => ipcRenderer.invoke("projects:archive", { projectId }),
+  restoreProject: (projectId: string) => ipcRenderer.invoke("projects:restore", { projectId }),
+  createChat: (name: string, projectId?: string) =>
+    ipcRenderer.invoke("projects:createChat", { name, projectId }),
+  switchChat: (chatId: string, projectId?: string) =>
+    ipcRenderer.invoke("projects:switchChat", { chatId, projectId }),
+  archiveChat: (chatId: string, projectId?: string) =>
+    ipcRenderer.invoke("projects:archiveChat", { chatId, projectId }),
+  restoreChat: (chatId: string, projectId?: string) =>
+    ipcRenderer.invoke("projects:restoreChat", { chatId, projectId }),
+  listChats: (projectId?: string) => ipcRenderer.invoke("projects:listChats", { projectId }),
+  showProjectChats: (open?: boolean) => ipcRenderer.invoke("projects:showChats", { open }),
+  summarizeProject: (projectId?: string, chatId?: string) =>
+    ipcRenderer.invoke("projects:summarize", { projectId, chatId }),
   sendToCodex: (text: string, chatId?: string) => ipcRenderer.invoke("codex:send", { text, chatId }),
   steerCodex: (text: string, chatId?: string) => ipcRenderer.invoke("codex:steer", { text, chatId }),
   interruptCodex: (chatId?: string) => ipcRenderer.invoke("codex:interrupt", { chatId }),
-  getChatStatus: (chatId?: string) => ipcRenderer.invoke("chats:status", { chatId }),
+  getChatStatus: (chatId?: string) => ipcRenderer.invoke("projects:chatStatus", { chatId }),
   setCodexSettings: (
     settings: { model?: string | null; reasoningEffort?: ReasoningEffort | null; permissionMode?: CodexPermissionMode | null },
     scope: CodexSettingsScope,

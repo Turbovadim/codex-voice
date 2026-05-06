@@ -137,6 +137,29 @@ export class RealtimeVoiceClient {
     });
   }
 
+  notifyCodexTurnCompleted(event: AppEvent): void {
+    if (!this.connected) return;
+    const update = codexCompletionUpdateText(event);
+    if (!update) return;
+
+    this.sendConversationText(update);
+    this.log("codexCompletion", event.message, event.raw);
+    if (this.paused) return;
+
+    this.send({
+      type: "response.create",
+      response: {
+        output_modalities: ["audio"],
+        instructions: [
+          "A Codex completion status update was just added to the conversation by the app.",
+          "Briefly tell the user that Codex finished.",
+          "Use one short natural sentence.",
+          "Do not call tools.",
+        ].join("\n"),
+      },
+    });
+  }
+
   speakPendingRequest(request: PendingCodexRequest): void {
     if (!this.connected || this.paused) return;
     const isQuestion = request.kind === "question";
@@ -159,6 +182,22 @@ export class RealtimeVoiceClient {
       response: {
         output_modalities: ["audio"],
         instructions,
+      },
+    });
+  }
+
+  private sendConversationText(text: string): void {
+    this.send({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text,
+          },
+        ],
       },
     });
   }
@@ -252,7 +291,7 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
       ok: true,
       message: result.message,
       turnId: result.turnId,
-      session: result.session,
+      project: result.project,
       chat: result.chat,
     };
   }
@@ -272,10 +311,11 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
 
   if (name === "get_codex_status") {
     const state = await window.codexVoice.getState();
+    const activeProject = state.activeProject;
     return {
       ok: true,
-      activeSession: state.activeSession,
-      activeChat: state.activeSession ? activeChat(visibleChats(state.activeSession.chats), state.activeSession.activeChatId) : null,
+      activeProject,
+      activeChat: activeProject ? activeChat(visibleChats(activeProject.chats), activeProject.activeChatId) : null,
       runtime: state.runtime,
       codexSettings: state.codexSettings,
     };
@@ -341,22 +381,23 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
     return { ok: true, message: "Updated Codex permission settings.", settings };
   }
 
-  if (name === "create_new_codex_session") {
-    const session = await window.codexVoice.createSession(optionalString(args.name));
-    return { ok: true, session };
+  if (name === "create_new_codex_project") {
+    const project = await window.codexVoice.createProject(optionalString(args.name));
+    return { ok: true, project };
   }
 
   if (name === "create_new_codex_chat") {
-    const session = await window.codexVoice.createChat(stringArg(args.name));
-    return { ok: true, message: `Created chat ${stringArg(args.name)}.`, session, activeChat: activeChat(visibleChats(session.chats), session.activeChatId) };
+    const project = await window.codexVoice.createChat(stringArg(args.name));
+    return { ok: true, message: `Created chat ${stringArg(args.name)}.`, project, activeChat: activeChat(visibleChats(project.chats), project.activeChatId) };
   }
 
   if (name === "list_codex_chats") {
     const state = await window.codexVoice.getState();
+    const activeProject = state.activeProject;
     return {
       ok: true,
       activeChatId: state.runtime.activeChatId,
-      chats: visibleChats(state.activeSession?.chats ?? []),
+      chats: visibleChats(activeProject?.chats ?? []),
       statuses: state.runtime.chats,
     };
   }
@@ -364,8 +405,8 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
   if (name === "switch_codex_chat") {
     const chatId = await resolveChatId(optionalString(args.chatId), optionalString(args.name));
     if (!chatId) throw new Error("No chat matched that request.");
-    const session = await window.codexVoice.switchChat(chatId);
-    return { ok: true, message: "Switched active chat.", session, activeChat: activeChat(visibleChats(session.chats), session.activeChatId) };
+    const project = await window.codexVoice.switchChat(chatId);
+    return { ok: true, message: "Switched active chat.", project, activeChat: activeChat(visibleChats(project.chats), project.activeChatId) };
   }
 
   if (name === "get_codex_chat_status") {
@@ -375,37 +416,39 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
   }
 
   if (name === "show_open_codex_chats") {
-    await window.codexVoice.showSessionChats(true);
+    await window.codexVoice.showProjectChats(true);
     const state = await window.codexVoice.getState();
-    return { ok: true, message: "Showing open chats.", chats: visibleChats(state.activeSession?.chats ?? []), statuses: state.runtime.chats };
+    const activeProject = state.activeProject;
+    return { ok: true, message: "Showing open chats.", chats: visibleChats(activeProject?.chats ?? []), statuses: state.runtime.chats };
   }
 
-  if (name === "list_recent_codex_sessions") {
+  if (name === "list_recent_codex_projects") {
     const state = await window.codexVoice.getState();
+    const projects = state.projects;
     return {
       ok: true,
-      sessions: state.sessions.slice(0, 8).map((session) => ({
-        id: session.id,
-        displayName: session.displayName,
-        updatedAt: session.updatedAt,
-        folderPath: session.folderPath,
-        lastSummary: session.lastSummary,
-        activeChatId: session.activeChatId,
-        chats: visibleChats(session.chats),
+      projects: projects.slice(0, 8).map((project) => ({
+        id: project.id,
+        displayName: project.displayName,
+        updatedAt: project.updatedAt,
+        folderPath: project.folderPath,
+        lastSummary: project.lastSummary,
+        activeChatId: project.activeChatId,
+        chats: visibleChats(project.chats),
       })),
     };
   }
 
-  if (name === "continue_codex_session") {
+  if (name === "continue_codex_project") {
     const state = await window.codexVoice.getState();
-    const sessionId = optionalString(args.sessionId) || state.sessions[0]?.id;
-    if (!sessionId) throw new Error("No recent Codex voice sessions exist yet.");
-    const session = await window.codexVoice.resumeSession(sessionId);
-    return { ok: true, session };
+    const projectId = optionalString(args.projectId) || state.projects[0]?.id;
+    if (!projectId) throw new Error("No recent Codex voice projects exist yet.");
+    const project = await window.codexVoice.resumeProject(projectId);
+    return { ok: true, project };
   }
 
-  if (name === "summarize_recent_session") {
-    const summary = await window.codexVoice.summarizeSession(optionalString(args.sessionId), await resolveChatId(optionalString(args.chatId), optionalString(args.chatName), true));
+  if (name === "summarize_recent_project") {
+    const summary = await window.codexVoice.summarizeProject(optionalString(args.projectId), await resolveChatId(optionalString(args.chatId), optionalString(args.chatName), true));
     return { ok: true, summary };
   }
 
@@ -447,7 +490,8 @@ async function resolveChatId(
 
 function findChatByName(state: AppState, name: string): VoiceChat | null {
   const needle = name.trim().toLowerCase();
-  const chats = visibleChats(state.activeSession?.chats ?? []);
+  const activeProject = state.activeProject;
+  const chats = visibleChats(activeProject?.chats ?? []);
   const exact = chats.filter((chat) => chat.displayName.toLowerCase() === needle || chat.id === name);
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) throw new Error(`More than one chat matched "${name}".`);
@@ -598,4 +642,36 @@ function summarizePendingRequestForSpeech(request: PendingCodexRequest): Record<
       options: question.options?.map((option) => option.label),
     })),
   };
+}
+
+function codexCompletionUpdateText(event: AppEvent): string | null {
+  const message = event.message.trim();
+  if (!message) return null;
+  const raw = (event.raw ?? {}) as {
+    threadId?: unknown;
+    turn?: {
+      id?: unknown;
+      status?: unknown;
+      error?: { message?: unknown };
+    };
+  };
+  const turn = raw.turn ?? {};
+  const lines = [
+    "App status update from Codex, not a user request.",
+    "Codex turn completed.",
+    `Status: ${message}`,
+  ];
+  if (typeof raw.threadId === "string" && raw.threadId.trim()) {
+    lines.push(`Thread ID: ${raw.threadId}`);
+  }
+  if (typeof turn.id === "string" && turn.id.trim()) {
+    lines.push(`Turn ID: ${turn.id}`);
+  }
+  if (typeof turn.status === "string" && turn.status.trim()) {
+    lines.push(`Turn status: ${turn.status}`);
+  }
+  if (typeof turn.error?.message === "string" && turn.error.message.trim()) {
+    lines.push(`Error: ${turn.error.message}`);
+  }
+  return lines.join("\n");
 }

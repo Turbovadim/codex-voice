@@ -96,9 +96,9 @@ function realtimeInstructions(): string {
     "- You do NOT inspect files, infer computer state, choose Codex tools, or invent context.",
     "- Codex is the actual computer-use agent. Your job is to pass the user's request to Codex.",
     "- If the user asks for a computer task, call submit_to_codex with the user's request as faithfully as possible.",
-    "- If the user asks to create a session or chat and gives an explicit name, use that name.",
-    "- If the user asks to create a session or chat with useful context but without an explicit name, create a short, clear, relevant 2-6 word name from that context.",
-    "- If the user asks to create a session or chat without a name or useful context, or the name would be ambiguous, ask: What would you like to use this chat or session for?",
+    "- If the user asks to create a project or chat and gives an explicit name, use that name.",
+    "- If the user asks to create a project or chat with useful context but without an explicit name, create a short, clear, relevant 2-6 word name from that context.",
+    "- If the user asks to create a project or chat without a name or useful context, or the name would be ambiguous, ask: What would you like to use this chat or project for?",
     "- Creating a chat with context only creates, names, and switches to the chat. Do not submit that context to Codex as work unless the user separately asks you to start the task.",
     "- If the user asks to show open chats, show chats, list chats, switch chats, or get updates on a chat, use the chat tools instead of submit_to_codex.",
     "- Only add context that came from the current live voice conversation.",
@@ -183,7 +183,7 @@ function realtimeTools(): unknown[] {
       type: "function",
       name: "get_codex_status",
       description:
-        "Get the current Codex session, turn status, model, reasoning effort settings, and pending approvals/questions.",
+        "Get the current Codex project, turn status, model, reasoning effort settings, and pending approvals/questions.",
       parameters: {
         type: "object",
         properties: {},
@@ -249,8 +249,8 @@ function realtimeTools(): unknown[] {
           model: { type: "string" },
           scope: {
             type: "string",
-            enum: ["chat", "session", "nextTurn"],
-            description: "Use chat unless the user says this is only for the next request/turn. Session is a legacy alias for chat.",
+            enum: ["chat", "nextTurn"],
+            description: "Use chat unless the user says this is only for the next request/turn.",
           },
         },
         required: ["model", "scope"],
@@ -269,8 +269,8 @@ function realtimeTools(): unknown[] {
           },
           scope: {
             type: "string",
-            enum: ["chat", "session", "nextTurn"],
-            description: "Use chat unless the user says this is only for the next request/turn. Session is a legacy alias for chat.",
+            enum: ["chat", "nextTurn"],
+            description: "Use chat unless the user says this is only for the next request/turn.",
           },
         },
         required: ["reasoningEffort", "scope"],
@@ -290,8 +290,8 @@ function realtimeTools(): unknown[] {
           },
           scope: {
             type: "string",
-            enum: ["chat", "session", "nextTurn"],
-            description: "Use chat unless the user says this is only for the next request/turn. Session is a legacy alias for chat.",
+            enum: ["chat", "nextTurn"],
+            description: "Use chat unless the user says this is only for the next request/turn.",
           },
         },
         required: ["permissionMode", "scope"],
@@ -299,9 +299,9 @@ function realtimeTools(): unknown[] {
     },
     {
       type: "function",
-      name: "create_new_codex_session",
+      name: "create_new_codex_project",
       description:
-        "Create a new Codex voice session with a fresh Documents workspace folder. Provide a short name when available or infer one from useful context; ask the user what the session is for if no useful name/context exists.",
+        "Create a new Codex voice project with a fresh Documents workspace folder. Provide a short name when available or infer one from useful context; ask the user what the project is for if no useful name/context exists.",
       parameters: {
         type: "object",
         properties: {
@@ -313,7 +313,7 @@ function realtimeTools(): unknown[] {
       type: "function",
       name: "create_new_codex_chat",
       description:
-        "Create a new chat/thread inside the current Codex voice session, make it active, and do not submit work to Codex. Requires a short clear name; ask the user what the chat is for if no useful name/context exists.",
+        "Create a new chat/thread inside the current Codex voice project, make it active, and do not submit work to Codex. Requires a short clear name; ask the user what the chat is for if no useful name/context exists.",
       parameters: {
         type: "object",
         properties: {
@@ -329,7 +329,7 @@ function realtimeTools(): unknown[] {
     {
       type: "function",
       name: "list_codex_chats",
-      description: "List chats/threads in the current Codex voice session.",
+      description: "List chats/threads in the current Codex voice project.",
       parameters: {
         type: "object",
         properties: {},
@@ -338,7 +338,7 @@ function realtimeTools(): unknown[] {
     {
       type: "function",
       name: "switch_codex_chat",
-      description: "Switch the active chat in the current Codex voice session by id or name.",
+      description: "Switch the active chat in the current Codex voice project by id or name.",
       parameters: {
         type: "object",
         properties: {
@@ -350,7 +350,7 @@ function realtimeTools(): unknown[] {
     {
       type: "function",
       name: "get_codex_chat_status",
-      description: "Get updates/status for one chat or all chats in the current session.",
+      description: "Get updates/status for one chat or all chats in the current project.",
       parameters: {
         type: "object",
         properties: {
@@ -362,7 +362,7 @@ function realtimeTools(): unknown[] {
     {
       type: "function",
       name: "show_open_codex_chats",
-      description: "Open the current session's chat drawer, equivalent to clicking the active session card.",
+      description: "Open the current project's chat drawer, equivalent to clicking the active project card.",
       parameters: {
         type: "object",
         properties: {},
@@ -370,8 +370,8 @@ function realtimeTools(): unknown[] {
     },
     {
       type: "function",
-      name: "list_recent_codex_sessions",
-      description: "List recent Codex voice sessions that can be summarized or continued.",
+      name: "list_recent_codex_projects",
+      description: "List recent Codex voice projects that can be summarized or continued.",
       parameters: {
         type: "object",
         properties: {},
@@ -379,23 +379,23 @@ function realtimeTools(): unknown[] {
     },
     {
       type: "function",
-      name: "continue_codex_session",
-      description: "Resume an existing Codex voice session by id, or the most recent session if no id is supplied.",
+      name: "continue_codex_project",
+      description: "Resume an existing Codex voice project by id, or the most recent project if no id is supplied.",
       parameters: {
         type: "object",
         properties: {
-          sessionId: { type: "string" },
+          projectId: { type: "string" },
         },
       },
     },
     {
       type: "function",
-      name: "summarize_recent_session",
-      description: "Ask Codex to summarize a recent session or chat, then return that summary for voice narration.",
+      name: "summarize_recent_project",
+      description: "Ask Codex to summarize a recent project or chat, then return that summary for voice narration.",
       parameters: {
         type: "object",
         properties: {
-          sessionId: { type: "string" },
+          projectId: { type: "string" },
           chatId: { type: "string" },
           chatName: { type: "string" },
         },

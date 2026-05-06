@@ -687,7 +687,7 @@ code {
   stroke-width: 2.4;
 }
 
-.voice-session-region {
+.voice-project-region {
   display: flex;
   width: auto;
   flex: 1 1 auto;
@@ -760,7 +760,7 @@ code {
   white-space: nowrap;
 }
 
-.featured-session-card,
+.featured-project-card,
 .voice-action-button,
 .recent-list,
 .voice-dialog {
@@ -771,7 +771,7 @@ code {
     0 12px 32px rgba(0, 0, 0, 0.12);
 }
 
-.featured-session-card {
+.featured-project-card {
   display: grid;
   width: 100%;
   flex: 0 0 auto;
@@ -784,9 +784,9 @@ code {
   text-align: left;
 }
 
-.featured-session-card:hover,
+.featured-project-card:hover,
 .voice-action-button:hover,
-.session-chat-row:hover,
+.project-chat-row:hover,
 .browse-row:hover {
   background: rgba(255, 255, 255, 0.045);
 }
@@ -842,7 +842,7 @@ code {
   line-height: 1.15;
 }
 
-.active-session-text {
+.active-project-text {
   color: rgba(99, 242, 131, 0.78);
   font-weight: 590;
 }
@@ -852,18 +852,18 @@ code {
   color: rgba(208, 216, 231, 0.5);
 }
 
-.featured-session-card > svg,
+.featured-project-card > svg,
 .recent-row > svg,
 .browse-row > svg {
   color: rgba(215, 224, 239, 0.68);
 }
 
-.featured-session-card.expanded {
+.featured-project-card.expanded {
   border-color: rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.052);
 }
 
-.featured-session-card .chevron-open {
+.featured-project-card .chevron-open {
   transform: rotate(90deg);
 }
 
@@ -906,7 +906,7 @@ code {
   white-space: nowrap;
 }
 
-.session-chats-panel {
+.project-chats-panel {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -915,7 +915,7 @@ code {
   margin-top: 10px;
 }
 
-.session-chats-header {
+.project-chats-header {
   display: flex;
   flex: 0 0 auto;
   align-items: flex-start;
@@ -923,13 +923,13 @@ code {
   padding: 0 5px;
 }
 
-.session-chats-header > div {
+.project-chats-header > div {
   display: grid;
   min-width: 0;
   gap: 4px;
 }
 
-.session-chats-header h2 {
+.project-chats-header h2 {
   margin: 0;
   color: rgba(211, 220, 235, 0.72);
   font-size: 13px;
@@ -938,7 +938,7 @@ code {
   text-transform: uppercase;
 }
 
-.session-chats-header p {
+.project-chats-header p {
   margin: 0;
   overflow: hidden;
   color: rgba(208, 216, 231, 0.58);
@@ -948,12 +948,12 @@ code {
   white-space: nowrap;
 }
 
-.session-chats-header p strong {
+.project-chats-header p strong {
   color: rgba(255, 255, 255, 0.9);
   font-weight: 680;
 }
 
-.session-chats-header > span {
+.project-chats-header > span {
   display: inline-grid;
   min-width: 22px;
   height: 22px;
@@ -966,7 +966,7 @@ code {
   font-weight: 700;
 }
 
-.session-chat-list {
+.project-chat-list {
   flex: 1 1 auto;
   min-height: 0;
   overflow-x: hidden;
@@ -979,7 +979,7 @@ code {
     0 12px 32px rgba(0, 0, 0, 0.12);
 }
 
-.session-chat-row {
+.project-chat-row {
   position: relative;
   display: grid;
   width: 100%;
@@ -992,16 +992,16 @@ code {
   text-align: left;
 }
 
-.session-chat-row + .session-chat-row {
+.project-chat-row + .project-chat-row {
   border-top: 1px solid rgba(255, 255, 255, 0.065);
 }
 
-.session-chat-row.active {
+.project-chat-row.active {
   background: rgba(255, 255, 255, 0.058);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.13);
 }
 
-.session-chat-row.active::before {
+.project-chat-row.active::before {
   position: absolute;
   top: 11px;
   bottom: 11px;
@@ -1012,13 +1012,13 @@ code {
   content: "";
 }
 
-.session-chat-copy {
+.project-chat-copy {
   display: grid;
   min-width: 0;
   gap: 5px;
 }
 
-.session-chat-row strong {
+.project-chat-row strong {
   overflow: hidden;
   color: rgba(255, 255, 255, 0.95);
   font-size: 15px;
@@ -1028,7 +1028,7 @@ code {
   white-space: nowrap;
 }
 
-.session-chat-row small {
+.project-chat-row small {
   overflow: hidden;
   color: rgba(208, 216, 231, 0.66);
   font-size: 13px;
@@ -1038,7 +1038,7 @@ code {
   white-space: nowrap;
 }
 
-.session-chat-trailing {
+.project-chat-trailing {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
@@ -1469,11 +1469,11 @@ code {
     gap: 12px;
   }
 
-  .featured-session-card {
+  .featured-project-card {
     grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .featured-session-card > svg {
+  .featured-project-card > svg {
     display: none;
   }
 }
@@ -1497,11 +1497,11 @@ code {
     font-size: 17px;
   }
 
-  .voice-session-region {
+  .voice-project-region {
     margin-top: 20px;
   }
 
-  .featured-session-card {
+  .featured-project-card {
     min-height: 64px;
     padding-top: 9px;
     padding-bottom: 9px;
@@ -1563,12 +1563,12 @@ code {
     font-size: 16px;
   }
 
-  .voice-session-region {
+  .voice-project-region {
     margin-top: 14px;
     padding-bottom: 8px;
   }
 
-  .featured-session-card {
+  .featured-project-card {
     min-height: 58px;
     padding-top: 7px;
     padding-bottom: 7px;
@@ -1584,7 +1584,7 @@ code {
     height: 23px;
   }
 
-  .session-chat-row {
+  .project-chat-row {
     min-height: 52px;
     padding-top: 8px;
     padding-bottom: 8px;
@@ -1729,7 +1729,7 @@ code {
   padding: 14px;
 }
 
-.sessions-panel {
+.projects-panel {
   grid-row: span 2;
 }
 
@@ -1751,21 +1751,21 @@ code {
   line-height: 1.2;
 }
 
-.new-session-row {
+.new-project-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
   margin-bottom: 12px;
 }
 
-.session-list,
+.project-list,
 .event-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.session-card {
+.project-card {
   display: flex;
   width: 100%;
   min-height: 84px;
@@ -1776,17 +1776,17 @@ code {
   text-align: left;
 }
 
-.session-card.active {
+.project-card.active {
   border-color: #1563ff;
   background: #f2f6ff;
 }
 
-.session-card strong {
+.project-card strong {
   font-size: 13px;
 }
 
-.session-card span,
-.session-card small,
+.project-card span,
+.project-card small,
 .help,
 .empty,
 .status-card small {

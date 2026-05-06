@@ -3,13 +3,13 @@
 A local Electron and TypeScript app that lets you talk to Codex through OpenAI
 Realtime voice. The Realtime model is the voice/control layer; Codex app-server
 is the computer-use agent that owns local execution, approvals, questions,
-session state, and tool work.
+project state, and tool work.
 
 ## What it does
 
 - Opens a compact voice window for speaking requests to Codex.
 - Starts, resumes, summarizes, interrupts, and steers Codex app-server turns.
-- Stores per-session workspaces under `~/Documents/Codex Voice Sessions/`.
+- Stores per-project workspaces under `~/Documents/Codex Voice Projects/`.
 - Forwards Codex approval and tool-question requests back through the UI and
   voice layer.
 - Uses OpenAI Realtime for audio input/output and `codex app-server` for the
@@ -18,7 +18,7 @@ session state, and tool work.
 ## Debugging
 
 This repo is still early, so the app includes a debugging-oriented window rather
-than a polished management surface. It shows session state, chats, runtime
+than a polished management surface. It shows project state, chats, runtime
 status, events, pending approvals, and manual send/steer controls.
 
 ## Requirements
@@ -78,7 +78,7 @@ npm run preview
 
 ```text
 src/main/       Electron main process, Codex bridge, Realtime secret creation,
-                session store, and orchestration.
+                project store, and orchestration.
 src/preload/    Context-isolated renderer bridge.
 src/renderer/   React UI and browser-side Realtime client.
 src/shared/     Shared TypeScript types.

@@ -20,7 +20,7 @@ import type {
   PendingCodexRequest,
   ReasoningEffort,
   ToolQuestionAnswer,
-  VoiceSession,
+  VoiceProject,
 } from "../shared/types";
 import {
   CODEX_PERMISSION_PROFILES,
@@ -30,7 +30,7 @@ import {
 } from "../shared/types";
 import { CodexBridge, type CodexJsonMessage } from "./codexBridge";
 import { createRealtimeClientSecret, realtimeConfig } from "./realtime";
-import { SessionStore } from "./sessionStore";
+import { ProjectStore } from "./projectStore";
 
 type TurnWaiter = {
   text: string;
@@ -40,7 +40,7 @@ type TurnWaiter = {
 };
 
 type ChatContext = {
-  session: VoiceSession;
+  project: VoiceProject;
   chat: VoiceChat;
   recovered?: boolean;
 };
@@ -52,8 +52,8 @@ type ReviewTarget =
   | { type: "custom"; instructions: string };
 
 export class VoiceCodexOrchestrator extends EventEmitter {
-  private activeSessionId: string | null = null;
-  private showSessionChatsFlag = false;
+  private activeProjectId: string | null = null;
+  private showProjectChatsFlag = false;
   private nextTurnModel: string | null = null;
   private nextTurnReasoningEffort: ReasoningEffort | null = null;
   private nextTurnPermissionMode: CodexPermissionMode | null = null;
@@ -73,7 +73,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   private threadStatusByThread = new Map<string, string>();
 
   constructor(
-    private readonly store: SessionStore,
+    private readonly store: ProjectStore,
     private readonly codex: CodexBridge,
   ) {
     super();
@@ -101,32 +101,32 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   }
 
   async state(): Promise<AppState> {
-    const sessions = await this.store.listSessions();
-    const archivedSessions = await this.store.listArchivedSessions();
-    let activeSession = this.activeSessionId
-      ? sessions.find((session) => session.id === this.activeSessionId) ?? null
+    const projects = await this.store.listProjects();
+    const archivedProjects = await this.store.listArchivedProjects();
+    let activeProject = this.activeProjectId
+      ? projects.find((project) => project.id === this.activeProjectId) ?? null
       : null;
-    if (this.activeSessionId && !activeSession) {
-      this.activeSessionId = null;
-      this.showSessionChatsFlag = false;
-      activeSession = null;
+    if (this.activeProjectId && !activeProject) {
+      this.activeProjectId = null;
+      this.showProjectChatsFlag = false;
+      activeProject = null;
     }
     return {
       baseFolder: this.store.baseFolder,
-      sessions,
-      archivedSessions,
-      activeSession,
-      runtime: this.runtimeState(activeSession, sessions),
-      codexSettings: this.codexSettings(activeSession),
+      projects,
+      archivedProjects,
+      activeProject,
+      runtime: this.runtimeState(activeProject, projects),
+      codexSettings: this.codexSettings(activeProject),
       realtime: realtimeConfig(),
     };
   }
 
-  async createSession(name?: string): Promise<VoiceSession> {
-    const session = await this.store.createSession(name);
-    const chatSettings = this.initialChatSettings(session);
+  async createProject(name?: string): Promise<VoiceProject> {
+    const project = await this.store.createProject(name);
+    const chatSettings = this.initialChatSettings(project);
     const result = (await this.codex.request("thread/start", {
-      cwd: session.folderPath,
+      cwd: project.folderPath,
       ...(chatSettings.model ? { model: chatSettings.model } : {}),
       ...permissionParams(chatSettings.permissionMode),
       personality: "friendly",
@@ -138,90 +138,90 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       throw new Error("Codex did not return a thread id.");
     }
 
-    const updated = await this.store.addChat(session.id, "Main task", codexThreadId, chatSettings);
-    this.activeSessionId = updated.id;
-    this.showSessionChatsFlag = false;
-    this.status = `Active session: ${updated.displayName}`;
-    this.emitEvent("app", "sessionCreated", `Created session "${updated.displayName}".`, updated);
+    const updated = await this.store.addChat(project.id, "Main task", codexThreadId, chatSettings);
+    this.activeProjectId = updated.id;
+    this.showProjectChatsFlag = false;
+    this.status = `Active project: ${updated.displayName}`;
+    this.emitEvent("app", "projectCreated", `Created project "${updated.displayName}".`, updated);
     this.emitState();
     return updated;
   }
 
-  async resumeSession(sessionId: string): Promise<VoiceSession> {
-    let session = await this.store.getSession(sessionId);
-    if (!session) throw new Error(`Unknown session: ${sessionId}`);
-    let chat = activeChatForSession(session);
+  async resumeProject(projectId: string): Promise<VoiceProject> {
+    let project = await this.store.getProject(projectId);
+    if (!project) throw new Error(`Unknown project: ${projectId}`);
+    let chat = activeChatForProject(project);
     if (!chat?.codexThreadId) {
-      const updated = await this.startChatThread(session, "Main task");
-      this.activeSessionId = updated.id;
-      this.showSessionChatsFlag = false;
-      this.status = `Created a new chat for session: ${updated.displayName}`;
-      this.emitEvent("app", "sessionResumed", this.status, updated);
+      const updated = await this.startChatThread(project, "Main task");
+      this.activeProjectId = updated.id;
+      this.showProjectChatsFlag = false;
+      this.status = `Created a new chat for project: ${updated.displayName}`;
+      this.emitEvent("app", "projectResumed", this.status, updated);
       this.emitState();
       return updated;
     }
 
-    const resumed = await this.resumeChatThread(session, chat);
+    const resumed = await this.resumeChatThread(project, chat);
 
-    const updated = await this.store.updateSession(resumed.session.id, {
+    const updated = await this.store.updateProject(resumed.project.id, {
       activeChatId: resumed.chat.id,
       codexThreadId: resumed.chat.codexThreadId,
       lastStatus: resumed.recovered ? "Started a fresh Codex thread." : "Codex thread resumed.",
     });
-    this.activeSessionId = updated.id;
-    this.showSessionChatsFlag = false;
+    this.activeProjectId = updated.id;
+    this.showProjectChatsFlag = false;
     this.status = resumed.recovered
-      ? `Recovered session chat: ${resumed.chat.displayName}`
-      : `Resumed session: ${updated.displayName}`;
-    this.emitEvent("app", "sessionResumed", `Resumed session "${updated.displayName}".`, updated);
+      ? `Recovered project chat: ${resumed.chat.displayName}`
+      : `Resumed project: ${updated.displayName}`;
+    this.emitEvent("app", "projectResumed", `Resumed project "${updated.displayName}".`, updated);
     this.emitState();
     return updated;
   }
 
-  async archiveSession(sessionId: string): Promise<VoiceSession> {
-    const updated = await this.store.archiveSession(sessionId);
-    if (this.activeSessionId === sessionId) {
-      this.activeSessionId = null;
-      this.showSessionChatsFlag = false;
+  async archiveProject(projectId: string): Promise<VoiceProject> {
+    const updated = await this.store.archiveProject(projectId);
+    if (this.activeProjectId === projectId) {
+      this.activeProjectId = null;
+      this.showProjectChatsFlag = false;
     }
-    this.status = `Archived session: ${updated.displayName}`;
-    this.emitEvent("app", "sessionArchived", this.status, updated);
+    this.status = `Archived project: ${updated.displayName}`;
+    this.emitEvent("app", "projectArchived", this.status, updated);
     this.emitState();
     return updated;
   }
 
-  async restoreSession(sessionId: string): Promise<VoiceSession> {
-    const updated = await this.store.restoreSession(sessionId);
-    this.status = `Restored session: ${updated.displayName}`;
-    this.emitEvent("app", "sessionRestored", this.status, updated);
+  async restoreProject(projectId: string): Promise<VoiceProject> {
+    const updated = await this.store.restoreProject(projectId);
+    this.status = `Restored project: ${updated.displayName}`;
+    this.emitEvent("app", "projectRestored", this.status, updated);
     this.emitState();
     return updated;
   }
 
-  async createChat(name: string, sessionId?: string): Promise<VoiceSession> {
+  async createChat(name: string, projectId?: string): Promise<VoiceProject> {
     const displayName = name.trim();
     if (!displayName) throw new Error("Chat name is required.");
-    const session = await this.requireSession(sessionId);
-    const updated = await this.startChatThread(session, displayName);
-    this.activeSessionId = updated.id;
-    this.showSessionChatsFlag = true;
+    const project = await this.requireProject(projectId);
+    const updated = await this.startChatThread(project, displayName);
+    this.activeProjectId = updated.id;
+    this.showProjectChatsFlag = true;
     this.status = `Active chat: ${displayName}`;
-    this.emitEvent("app", "chatCreated", `Created chat "${displayName}".`, activeChatForSession(updated));
+    this.emitEvent("app", "chatCreated", `Created chat "${displayName}".`, activeChatForProject(updated));
     this.emitState();
     return updated;
   }
 
-  async switchChat(chatId: string, sessionId?: string): Promise<VoiceSession> {
-    const session = sessionId ? await this.requireSession(sessionId) : await this.requireSessionForChat(chatId);
-    const chat = session.chats.find((candidate) => candidate.id === chatId);
+  async switchChat(chatId: string, projectId?: string): Promise<VoiceProject> {
+    const project = projectId ? await this.requireProject(projectId) : await this.requireProjectForChat(chatId);
+    const chat = project.chats.find((candidate) => candidate.id === chatId);
     if (!chat) throw new Error(`Unknown chat: ${chatId}`);
     if (!chat.codexThreadId) throw new Error(`Chat "${chat.displayName}" does not have a Codex thread id.`);
 
-    const resumed = await this.resumeChatThread(session, chat);
+    const resumed = await this.resumeChatThread(project, chat);
 
-    const updated = await this.store.setActiveChat(resumed.session.id, resumed.chat.id);
-    this.activeSessionId = updated.id;
-    this.showSessionChatsFlag = true;
+    const updated = await this.store.setActiveChat(resumed.project.id, resumed.chat.id);
+    this.activeProjectId = updated.id;
+    this.showProjectChatsFlag = true;
     this.status = resumed.recovered
       ? `Recovered and switched to chat: ${resumed.chat.displayName}`
       : `Active chat: ${resumed.chat.displayName}`;
@@ -230,51 +230,51 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     return updated;
   }
 
-  async archiveChat(chatId: string, sessionId?: string): Promise<VoiceSession> {
-    const session = sessionId ? await this.requireSession(sessionId) : await this.requireSessionForChat(chatId);
-    const chat = session.chats.find((candidate) => candidate.id === chatId && !candidate.archivedAt);
+  async archiveChat(chatId: string, projectId?: string): Promise<VoiceProject> {
+    const project = projectId ? await this.requireProject(projectId) : await this.requireProjectForChat(chatId);
+    const chat = project.chats.find((candidate) => candidate.id === chatId && !candidate.archivedAt);
     if (!chat) throw new Error(`Unknown chat: ${chatId}`);
 
-    const visibleChats = session.chats.filter((candidate) => !candidate.archivedAt);
-    const sessionWithReplacement =
+    const visibleChats = project.chats.filter((candidate) => !candidate.archivedAt);
+    const projectWithReplacement =
       visibleChats.length === 1 && visibleChats[0]?.id === chat.id
-        ? await this.startChatThread(session, "Main task")
-        : session;
-    const updated = await this.store.archiveChat(sessionWithReplacement.id, chat.id);
-    if (this.activeSessionId === session.id) {
-      this.activeSessionId = updated.id;
-      this.showSessionChatsFlag = Boolean(updated.activeChatId);
+        ? await this.startChatThread(project, "Main task")
+        : project;
+    const updated = await this.store.archiveChat(projectWithReplacement.id, chat.id);
+    if (this.activeProjectId === project.id) {
+      this.activeProjectId = updated.id;
+      this.showProjectChatsFlag = Boolean(updated.activeChatId);
     }
     this.status = `Archived chat: ${chat.displayName}`;
-    this.emitEvent("app", "chatArchived", this.status, { sessionId: session.id, chatId: chat.id });
+    this.emitEvent("app", "chatArchived", this.status, { projectId: project.id, chatId: chat.id });
     this.emitState();
     return updated;
   }
 
-  async restoreChat(chatId: string, sessionId?: string): Promise<VoiceSession> {
-    const session = sessionId
-      ? await this.store.getSession(sessionId, { includeArchived: true })
-      : await this.findSessionForChat(chatId, true);
-    if (!session) throw new Error(`Unknown chat: ${chatId}`);
-    const chat = session.chats.find((candidate) => candidate.id === chatId);
+  async restoreChat(chatId: string, projectId?: string): Promise<VoiceProject> {
+    const project = projectId
+      ? await this.store.getProject(projectId, { includeArchived: true })
+      : await this.findProjectForChat(chatId, true);
+    if (!project) throw new Error(`Unknown chat: ${chatId}`);
+    const chat = project.chats.find((candidate) => candidate.id === chatId);
     if (!chat) throw new Error(`Unknown chat: ${chatId}`);
 
-    const updated = await this.store.restoreChat(session.id, chat.id);
+    const updated = await this.store.restoreChat(project.id, chat.id);
     this.status = `Restored chat: ${chat.displayName}`;
-    this.emitEvent("app", "chatRestored", this.status, { sessionId: session.id, chatId: chat.id });
+    this.emitEvent("app", "chatRestored", this.status, { projectId: project.id, chatId: chat.id });
     this.emitState();
     return updated;
   }
 
-  async listChats(sessionId?: string): Promise<VoiceChat[]> {
-    const session = await this.requireSession(sessionId);
-    return session.chats.filter((chat) => !chat.archivedAt);
+  async listChats(projectId?: string): Promise<VoiceChat[]> {
+    const project = await this.requireProject(projectId);
+    return project.chats.filter((chat) => !chat.archivedAt);
   }
 
-  async showSessionChats(open = true): Promise<void> {
-    this.showSessionChatsFlag = open;
+  async showProjectChats(open = true): Promise<void> {
+    this.showProjectChatsFlag = open;
     this.status = open ? "Showing open chats." : "Hiding open chats.";
-    this.emitEvent("app", "showSessionChats", this.status, { open });
+    this.emitEvent("app", "showProjectChats", this.status, { open });
     this.emitState();
   }
 
@@ -287,19 +287,19 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     }
 
     let context: ChatContext;
-    if (!this.activeSessionId && !chatId) {
-      const session = await this.createSession(titleFromText(trimmed));
-      context = this.requireActiveChatContextFromSession(session);
+    if (!this.activeProjectId && !chatId) {
+      const project = await this.createProject(titleFromText(trimmed));
+      context = this.requireActiveChatContextFromProject(project);
     } else {
       context = await this.requireChatContext(chatId);
     }
-    const { session, chat } = await this.resumeChatThread(context.session, context.chat);
+    const { project, chat } = await this.resumeChatThread(context.project, context.chat);
     if (!chat.codexThreadId) throw new Error("Active chat is missing a Codex thread id.");
 
-    const turnSettings = this.resolveTurnSettings(session, chat);
+    const turnSettings = this.resolveTurnSettings(project, chat);
     const result = (await this.codex.request("turn/start", {
       threadId: chat.codexThreadId,
-      cwd: session.folderPath,
+      cwd: project.folderPath,
       ...permissionParams(turnSettings.permissionMode),
       personality: "friendly",
       ...(turnSettings.model ? { model: turnSettings.model } : {}),
@@ -325,7 +325,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     this.nextTurnReasoningEffort = null;
     this.nextTurnPermissionMode = null;
     this.status = `${chat.displayName}: Codex is working.`;
-    const updated = await this.store.updateChat(session.id, chat.id, {
+    const updated = await this.store.updateChat(project.id, chat.id, {
       lastStatus: "Codex is working.",
     });
     this.emitEvent("app", "turnStarted", `Sent request to "${chat.displayName}".`, { turnId, chatId: chat.id, text: trimmed });
@@ -334,13 +334,13 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       kind: "turn",
       message: `Codex started with ${this.describeModelEffort(turnSettings.model, turnSettings.reasoningEffort)}.`,
       turnId,
-      session: updated,
+      project: updated,
       chat: updated.chats.find((candidate) => candidate.id === chat.id) ?? null,
     };
   }
 
   async steerCodex(text: string, chatId?: string): Promise<{ turnId: string }> {
-    const { session, chat } = await this.requireChatContext(chatId);
+    const { project, chat } = await this.requireChatContext(chatId);
     const threadId = chat.codexThreadId;
     const turnId = threadId ? this.activeTurnByThread.get(threadId) ?? null : null;
     if (!threadId || !turnId) {
@@ -357,7 +357,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
         },
       ],
     });
-    await this.store.updateChat(session.id, chat.id, { lastStatus: "Steered active turn." });
+    await this.store.updateChat(project.id, chat.id, { lastStatus: "Steered active turn." });
     this.status = `Steered "${chat.displayName}".`;
     this.emitEvent("app", "turnSteered", `Steered "${chat.displayName}".`, { text, chatId: chat.id });
     this.emitState();
@@ -365,7 +365,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   }
 
   async interruptCodex(chatId?: string): Promise<void> {
-    const { session, chat } = await this.requireChatContext(chatId);
+    const { project, chat } = await this.requireChatContext(chatId);
     const threadId = chat.codexThreadId;
     const turnId = threadId ? this.activeTurnByThread.get(threadId) ?? null : null;
     if (!threadId || !turnId) {
@@ -375,32 +375,32 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       threadId,
       turnId,
     });
-    await this.store.updateChat(session.id, chat.id, { lastStatus: "Requested Codex interruption." });
+    await this.store.updateChat(project.id, chat.id, { lastStatus: "Requested Codex interruption." });
     this.status = `Requested interruption for "${chat.displayName}".`;
     this.emitEvent("app", "turnInterrupted", this.status, { chatId: chat.id, turnId });
     this.emitState();
   }
 
-  async summarizeSession(sessionId?: string, chatId?: string): Promise<string> {
+  async summarizeProject(projectId?: string, chatId?: string): Promise<string> {
     const target =
-      (sessionId ? await this.store.getSession(sessionId) : null) ??
-      (this.activeSessionId ? await this.store.getSession(this.activeSessionId) : null) ??
-      (await this.store.getMostRecent());
-    if (!target) throw new Error("No recent sessions are available to summarize.");
+      (projectId ? await this.store.getProject(projectId) : null) ??
+      (this.activeProjectId ? await this.store.getProject(this.activeProjectId) : null) ??
+      (await this.store.getMostRecentProject());
+    if (!target) throw new Error("No recent projects are available to summarize.");
 
     const chat = chatId
       ? target.chats.find((candidate) => candidate.id === chatId && !candidate.archivedAt) ?? null
-      : activeChatForSession(target) ?? target.chats.find((candidate) => !candidate.archivedAt) ?? null;
-    if (chatId && !chat) throw new Error(`Unknown chat for session "${target.displayName}": ${chatId}`);
-    if (!chat?.codexThreadId) throw new Error("Session is missing a Codex chat thread id.");
+      : activeChatForProject(target) ?? target.chats.find((candidate) => !candidate.archivedAt) ?? null;
+    if (chatId && !chat) throw new Error(`Unknown chat for project "${target.displayName}": ${chatId}`);
+    if (!chat?.codexThreadId) throw new Error("Project is missing a Codex chat thread id.");
     const resumed = await this.resumeChatThread(target, chat);
     const resumedThreadId = resumed.chat.codexThreadId;
-    if (!resumedThreadId) throw new Error("Session is missing a Codex chat thread id.");
+    if (!resumedThreadId) throw new Error("Project is missing a Codex chat thread id.");
 
-    const turnSettings = this.resolveTurnSettings(resumed.session, resumed.chat);
+    const turnSettings = this.resolveTurnSettings(resumed.project, resumed.chat);
     const result = (await this.codex.request("turn/start", {
       threadId: resumedThreadId,
-      cwd: resumed.session.folderPath,
+      cwd: resumed.project.folderPath,
       ...permissionParams(turnSettings.permissionMode),
       personality: "friendly",
       ...(turnSettings.model ? { model: turnSettings.model } : {}),
@@ -409,7 +409,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
         {
           type: "text",
           text:
-            "Please summarize this Codex voice session for the user in 4-6 concise bullets. Focus on what the user was trying to do, what Codex changed or found, current status, and useful next steps. Do not invent context.",
+            "Please summarize this Codex voice project for the user in 4-6 concise bullets. Focus on what the user was trying to do, what Codex changed or found, current status, and useful next steps. Do not invent context.",
           text_elements: [],
         },
       ],
@@ -433,11 +433,11 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     this.emitState();
 
     const summary = await this.waitForTurnText(turnId);
-    await this.store.updateChat(resumed.session.id, resumed.chat.id, {
+    await this.store.updateChat(resumed.project.id, resumed.chat.id, {
       lastSummary: summary,
       lastStatus: "Chat summarized.",
     });
-    this.emitEvent("app", "summaryCompleted", "Codex summarized the session.", { summary });
+    this.emitEvent("app", "summaryCompleted", "Codex summarized the project.", { summary });
     this.emitState();
     return summary;
   }
@@ -603,8 +603,8 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   }
 
   async getChatStatus(chatId?: string): Promise<CodexChatRuntime[]> {
-    const session = chatId ? await this.requireSessionForChat(chatId) : await this.requireSession();
-    const runtimes = this.chatRuntimeStates(session);
+    const project = chatId ? await this.requireProjectForChat(chatId) : await this.requireProject();
+    const runtimes = this.chatRuntimeStates(project);
     return chatId ? runtimes.filter((runtime) => runtime.chatId === chatId) : runtimes;
   }
 
@@ -634,11 +634,11 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       )}, ${this.describePermissions(this.nextTurnPermissionMode ?? DEFAULT_CODEX_PERMISSION_MODE)}.`;
       this.emitEvent("app", "settingsChanged", this.status);
       this.emitState();
-      return this.codexSettings(await this.getActiveSession());
+      return this.codexSettings(await this.getActiveProject());
     }
 
-    const { session, chat } = await this.requireChatContext();
-    const updated = await this.store.updateChat(session.id, chat.id, {
+    const { project, chat } = await this.requireChatContext();
+    const updated = await this.store.updateChat(project.id, chat.id, {
       ...(settings.model !== undefined ? { model: settings.model } : {}),
       ...(settings.reasoningEffort !== undefined
         ? { reasoningEffort: settings.reasoningEffort }
@@ -660,83 +660,83 @@ export class VoiceCodexOrchestrator extends EventEmitter {
 
   createRealtimeClientSecret = createRealtimeClientSecret;
 
-  private async getActiveSession(): Promise<VoiceSession | null> {
-    return this.activeSessionId ? this.store.getSession(this.activeSessionId) : null;
+  private async getActiveProject(): Promise<VoiceProject | null> {
+    return this.activeProjectId ? this.store.getProject(this.activeProjectId) : null;
   }
 
-  private async requireSession(sessionId?: string): Promise<VoiceSession> {
-    const id = sessionId ?? this.activeSessionId;
-    if (!id) throw new Error("No active Codex session.");
-    const session = await this.store.getSession(id);
-    if (!session) throw new Error(`Unknown voice session: ${id}`);
-    return session;
+  private async requireProject(projectId?: string): Promise<VoiceProject> {
+    const id = projectId ?? this.activeProjectId;
+    if (!id) throw new Error("No active Codex project.");
+    const project = await this.store.getProject(id);
+    if (!project) throw new Error(`Unknown voice project: ${id}`);
+    return project;
   }
 
-  private async requireSessionForChat(chatId: string): Promise<VoiceSession> {
-    const session = await this.findSessionForChat(chatId, false);
-    if (!session) throw new Error(`Unknown chat: ${chatId}`);
-    return session;
+  private async requireProjectForChat(chatId: string): Promise<VoiceProject> {
+    const project = await this.findProjectForChat(chatId, false);
+    if (!project) throw new Error(`Unknown chat: ${chatId}`);
+    return project;
   }
 
-  private async findSessionForChat(chatId: string, includeArchived: boolean): Promise<VoiceSession | null> {
-    const sessions = await this.store.listSessions({ includeArchived });
+  private async findProjectForChat(chatId: string, includeArchived: boolean): Promise<VoiceProject | null> {
+    const projects = await this.store.listProjects({ includeArchived });
     return (
-      sessions.find((candidate) =>
+      projects.find((candidate) =>
         candidate.chats.some((chat) => chat.id === chatId && (includeArchived || !chat.archivedAt)),
       ) ?? null
     );
   }
 
-  private async requireActiveSession(): Promise<VoiceSession> {
-    return this.requireSession();
+  private async requireActiveProject(): Promise<VoiceProject> {
+    return this.requireProject();
   }
 
   private async requireChatContext(chatId?: string): Promise<ChatContext> {
     if (chatId) {
-      const session = await this.requireSessionForChat(chatId);
-      const chat = session.chats.find((candidate) => candidate.id === chatId && !candidate.archivedAt);
+      const project = await this.requireProjectForChat(chatId);
+      const chat = project.chats.find((candidate) => candidate.id === chatId && !candidate.archivedAt);
       if (!chat) throw new Error(`Unknown chat: ${chatId}`);
-      return { session, chat };
+      return { project, chat };
     }
 
-    let session = await this.requireSession();
-    let chat = activeChatForSession(session);
+    let project = await this.requireProject();
+    let chat = activeChatForProject(project);
     if (!chat) {
-      session = await this.createChat("Main task", session.id);
-      chat = activeChatForSession(session);
+      project = await this.createChat("Main task", project.id);
+      chat = activeChatForProject(project);
     }
-    if (!chat) throw new Error("Active session does not have an active chat.");
-    return { session, chat };
+    if (!chat) throw new Error("Active project does not have an active chat.");
+    return { project, chat };
   }
 
-  private requireActiveChatContextFromSession(session: VoiceSession): ChatContext {
-    const chat = activeChatForSession(session);
-    if (!chat) throw new Error("Session does not have an active chat.");
-    return { session, chat };
+  private requireActiveChatContextFromProject(project: VoiceProject): ChatContext {
+    const chat = activeChatForProject(project);
+    if (!chat) throw new Error("Project does not have an active chat.");
+    return { project, chat };
   }
 
-  private async resumeChatThread(session: VoiceSession, chat: VoiceChat): Promise<ChatContext> {
+  private async resumeChatThread(project: VoiceProject, chat: VoiceChat): Promise<ChatContext> {
     if (!chat.codexThreadId) {
       throw new Error(`Chat "${chat.displayName}" does not have a Codex thread id.`);
     }
-    const chatSettings = this.threadSettingsForChat(session, chat);
+    const chatSettings = this.threadSettingsForChat(project, chat);
 
     try {
       await this.codex.request("thread/resume", {
         threadId: chat.codexThreadId,
-        cwd: session.folderPath,
+        cwd: project.folderPath,
         ...permissionParams(chatSettings.permissionMode),
         personality: "friendly",
         excludeTurns: true,
         ...(chatSettings.model ? { model: chatSettings.model } : {}),
       });
-      return { session, chat };
+      return { project, chat };
     } catch (error) {
       if (!isMissingCodexThreadError(error)) throw error;
     }
 
     const result = (await this.codex.request("thread/start", {
-      cwd: session.folderPath,
+      cwd: project.folderPath,
       ...(chatSettings.model ? { model: chatSettings.model } : {}),
       ...permissionParams(chatSettings.permissionMode),
       personality: "friendly",
@@ -746,11 +746,11 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     const codexThreadId = result.thread?.id;
     if (!codexThreadId) throw new Error("Codex did not return a replacement thread id.");
 
-    const updatedSession = await this.store.updateChat(session.id, chat.id, {
+    const updatedProject = await this.store.updateChat(project.id, chat.id, {
       codexThreadId,
       lastStatus: "Started a fresh Codex thread.",
     });
-    const updatedChat = updatedSession.chats.find((candidate) => candidate.id === chat.id);
+    const updatedChat = updatedProject.chats.find((candidate) => candidate.id === chat.id);
     if (!updatedChat) throw new Error(`Unknown chat after recovery: ${chat.id}`);
 
     this.emitEvent(
@@ -759,13 +759,13 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       `Started a fresh Codex thread for "${updatedChat.displayName}" because the previous rollout was unavailable.`,
       { chatId: updatedChat.id, oldThreadId: chat.codexThreadId, newThreadId: codexThreadId },
     );
-    return { session: updatedSession, chat: updatedChat, recovered: true };
+    return { project: updatedProject, chat: updatedChat, recovered: true };
   }
 
-  private async startChatThread(session: VoiceSession, displayName: string): Promise<VoiceSession> {
-    const chatSettings = this.initialChatSettings(session);
+  private async startChatThread(project: VoiceProject, displayName: string): Promise<VoiceProject> {
+    const chatSettings = this.initialChatSettings(project);
     const result = (await this.codex.request("thread/start", {
-      cwd: session.folderPath,
+      cwd: project.folderPath,
       ...(chatSettings.model ? { model: chatSettings.model } : {}),
       ...permissionParams(chatSettings.permissionMode),
       personality: "friendly",
@@ -775,7 +775,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     const codexThreadId = result.thread?.id;
     if (!codexThreadId) throw new Error("Codex did not return a thread id.");
 
-    return this.store.addChat(session.id, displayName, codexThreadId, chatSettings);
+    return this.store.addChat(project.id, displayName, codexThreadId, chatSettings);
   }
 
   private handleServerRequest(message: CodexJsonMessage): void {
@@ -887,37 +887,37 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     });
   }
 
-  private runtimeState(activeSession: VoiceSession | null, sessions: VoiceSession[]): CodexRuntimeState {
-    const activeChat = activeSession ? activeChatForSession(activeSession) : null;
+  private runtimeState(activeProject: VoiceProject | null, projects: VoiceProject[]): CodexRuntimeState {
+    const activeChat = activeProject ? activeChatForProject(activeProject) : null;
     const activeThreadId = activeChat?.codexThreadId ?? null;
-    const chatRuntimes = activeSession ? this.chatRuntimeStates(activeSession) : [];
+    const chatRuntimes = activeProject ? this.chatRuntimeStates(activeProject) : [];
     const activeRuntime = activeChat
       ? chatRuntimes.find((runtime) => runtime.chatId === activeChat.id) ?? null
       : null;
     return {
       ready: this.codex.ready,
-      activeSessionId: this.activeSessionId,
+      activeProjectId: this.activeProjectId,
       activeChatId: activeChat?.id ?? null,
       activeTurnId: activeRuntime?.activeTurnId ?? null,
       status: activeRuntime?.status ?? this.status,
       threadStatus: activeThreadId ? this.threadStatusByThread.get(activeThreadId) ?? null : null,
       tokenUsage: activeThreadId ? this.tokenUsageByThread.get(activeThreadId) ?? null : null,
-      pendingRequests: this.runtimePendingRequests(activeSession, chatRuntimes, sessions),
+      pendingRequests: this.runtimePendingRequests(activeProject, chatRuntimes, projects),
       chats: chatRuntimes,
-      showSessionChats: this.showSessionChatsFlag,
+      showProjectChats: this.showProjectChatsFlag,
     };
   }
 
-  private chatRuntimeStates(session: VoiceSession): CodexChatRuntime[] {
-    return session.chats.filter((chat) => !chat.archivedAt).map((chat) => {
+  private chatRuntimeStates(project: VoiceProject): CodexChatRuntime[] {
+    return project.chats.filter((chat) => !chat.archivedAt).map((chat) => {
       const threadId = chat.codexThreadId;
       const pendingRequests = threadId
         ? [...this.pendingRequests.values()]
             .filter((request) => request.threadId === threadId)
             .map((request) => ({
               ...request,
-              sessionId: session.id,
-              sessionName: session.displayName,
+              projectId: project.id,
+              projectName: project.displayName,
               chatId: chat.id,
               chatName: chat.displayName,
             }))
@@ -941,20 +941,20 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   }
 
   private runtimePendingRequests(
-    activeSession: VoiceSession | null,
+    activeProject: VoiceProject | null,
     chatRuntimes: CodexChatRuntime[],
-    sessions: VoiceSession[],
+    projects: VoiceProject[],
   ): PendingCodexRequest[] {
     const chatByThread = new Map(
       chatRuntimes
         .filter((runtime): runtime is CodexChatRuntime & { threadId: string } => Boolean(runtime.threadId))
         .map((runtime) => [runtime.threadId, runtime]),
     );
-    const storedChatByThread = new Map<string, { session: VoiceSession; chat: VoiceChat }>();
-    for (const session of sessions) {
-      for (const chat of session.chats) {
+    const storedChatByThread = new Map<string, { project: VoiceProject; chat: VoiceChat }>();
+    for (const project of projects) {
+      for (const chat of project.chats) {
         if (chat.codexThreadId && !chat.archivedAt) {
-          storedChatByThread.set(chat.codexThreadId, { session, chat });
+          storedChatByThread.set(chat.codexThreadId, { project, chat });
         }
       }
     }
@@ -965,9 +965,9 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       if (!runtime && !stored) return request;
       return {
         ...request,
-        sessionId: stored?.session.id ?? activeSession?.id,
+        projectId: stored?.project.id ?? activeProject?.id,
         chatId: runtime?.chatId ?? stored?.chat.id,
-        sessionName: stored?.session.displayName,
+        projectName: stored?.project.displayName,
         chatName: runtime?.displayName ?? stored?.chat.displayName,
       };
     });
@@ -1000,19 +1000,16 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     }
   }
 
-  private codexSettings(activeSession: VoiceSession | null): CodexSettings {
-    const activeChat = activeSession ? activeChatForSession(activeSession) : null;
+  private codexSettings(activeProject: VoiceProject | null): CodexSettings {
+    const activeChat = activeProject ? activeChatForProject(activeProject) : null;
     const activeThreadId = activeChat?.codexThreadId ?? null;
-    const chatModel = activeChat?.model ?? activeSession?.model ?? null;
-    const chatReasoningEffort = activeChat?.reasoningEffort ?? activeSession?.reasoningEffort ?? null;
-    const chatPermissionMode = activeChat?.permissionMode ?? activeSession?.permissionMode ?? this.defaultPermissionMode;
+    const chatModel = activeChat?.model ?? activeProject?.model ?? null;
+    const chatReasoningEffort = activeChat?.reasoningEffort ?? activeProject?.reasoningEffort ?? null;
+    const chatPermissionMode = activeChat?.permissionMode ?? activeProject?.permissionMode ?? this.defaultPermissionMode;
     return {
       chatModel,
       chatReasoningEffort,
       chatPermissionMode,
-      sessionModel: chatModel,
-      sessionReasoningEffort: chatReasoningEffort,
-      sessionPermissionMode: chatPermissionMode,
       nextTurnModel: this.nextTurnModel,
       nextTurnReasoningEffort: this.nextTurnReasoningEffort,
       nextTurnPermissionMode: this.nextTurnPermissionMode,
@@ -1030,12 +1027,12 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     };
   }
 
-  private resolveTurnSettings(session: VoiceSession, chat?: VoiceChat | null): {
+  private resolveTurnSettings(project: VoiceProject, chat?: VoiceChat | null): {
     model: string | null;
     reasoningEffort: ReasoningEffort | null;
     permissionMode: CodexPermissionMode;
   } {
-    const settings = this.threadSettingsForChat(session, chat ?? activeChatForSession(session));
+    const settings = this.threadSettingsForChat(project, chat ?? activeChatForProject(project));
     return {
       model: this.nextTurnModel ?? settings.model,
       reasoningEffort:
@@ -1045,21 +1042,21 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     };
   }
 
-  private initialChatSettings(session: VoiceSession): {
+  private initialChatSettings(project: VoiceProject): {
     model: string | null;
     reasoningEffort: ReasoningEffort | null;
     permissionMode: CodexPermissionMode;
   } {
     return {
-      model: session.model ?? this.defaultModel ?? DEFAULT_CODEX_MODEL,
+      model: project.model ?? this.defaultModel ?? DEFAULT_CODEX_MODEL,
       reasoningEffort:
-        session.reasoningEffort ?? this.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
-      permissionMode: session.permissionMode ?? this.defaultPermissionMode,
+        project.reasoningEffort ?? this.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
+      permissionMode: project.permissionMode ?? this.defaultPermissionMode,
     };
   }
 
   private threadSettingsForChat(
-    session: VoiceSession,
+    project: VoiceProject,
     chat?: VoiceChat | null,
   ): {
     model: string | null;
@@ -1067,13 +1064,13 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     permissionMode: CodexPermissionMode;
   } {
     return {
-      model: chat?.model ?? session.model ?? this.defaultModel ?? DEFAULT_CODEX_MODEL,
+      model: chat?.model ?? project.model ?? this.defaultModel ?? DEFAULT_CODEX_MODEL,
       reasoningEffort:
         chat?.reasoningEffort ??
-        session.reasoningEffort ??
+        project.reasoningEffort ??
         this.defaultReasoningEffort ??
         DEFAULT_CODEX_REASONING_EFFORT,
-      permissionMode: chat?.permissionMode ?? session.permissionMode ?? this.defaultPermissionMode,
+      permissionMode: chat?.permissionMode ?? project.permissionMode ?? this.defaultPermissionMode,
     };
   }
 
@@ -1086,7 +1083,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     }
 
     if (lowerCommand === "status" || lowerCommand === "settings") {
-      return this.commandResult(await this.nativeStatusText(), await this.getActiveSession());
+      return this.commandResult(await this.nativeStatusText(), await this.getActiveProject());
     }
 
     if (lowerCommand === "model" || lowerCommand === "models") {
@@ -1124,15 +1121,15 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     }
 
     if (lowerCommand === "new") {
-      const session = await this.createSession(rest || undefined);
-      return this.commandResult(`Created new Codex voice session: ${session.displayName}\n${session.folderPath}`, session);
+      const project = await this.createProject(rest || undefined);
+      return this.commandResult(`Created new Codex voice project: ${project.displayName}\n${project.folderPath}`, project);
     }
 
     if (lowerCommand === "resume") {
-      const targetId = args[0] ?? (await this.store.getMostRecent())?.id;
-      if (!targetId) throw new Error("No recent Codex voice sessions exist yet.");
-      const session = await this.resumeSession(targetId);
-      return this.commandResult(`Resumed Codex voice session: ${session.displayName}`, session);
+      const targetId = args[0] ?? (await this.store.getMostRecentProject())?.id;
+      if (!targetId) throw new Error("No recent Codex voice projects exist yet.");
+      const project = await this.resumeProject(targetId);
+      return this.commandResult(`Resumed Codex voice project: ${project.displayName}`, project);
     }
 
     const unsupported = nativeUnsupportedSlashCommand(lowerCommand);
@@ -1145,16 +1142,16 @@ export class VoiceCodexOrchestrator extends EventEmitter {
 
   private async handleModelSlash(args: string[]): Promise<CodexActionResult> {
     await this.refreshModels();
-    const activeSession = await this.getActiveSession();
+    const activeProject = await this.getActiveProject();
 
     if (args.length === 0) {
       return this.commandResult(
-        [this.currentSettingsText(activeSession), "", "Available models", formatModelList(this.models)].join("\n"),
-        activeSession,
+        [this.currentSettingsText(activeProject), "", "Available models", formatModelList(this.models)].join("\n"),
+        activeProject,
       );
     }
 
-    const parsed = parseModelSlashArgs(args, activeSession ? "chat" : "nextTurn");
+    const parsed = parseModelSlashArgs(args, activeProject ? "chat" : "nextTurn");
     if (parsed.model !== undefined && parsed.model !== null) this.assertKnownModel(parsed.model);
     if (parsed.reasoningEffort !== undefined && parsed.reasoningEffort !== null) {
       this.assertReasoningEffort(parsed.reasoningEffort);
@@ -1167,15 +1164,15 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       },
       parsed.scope,
     );
-    return this.commandResult(`Updated /model for ${parsed.scope}.\n${settingsText(settings)}`, await this.getActiveSession());
+    return this.commandResult(`Updated /model for ${parsed.scope}.\n${settingsText(settings)}`, await this.getActiveProject());
   }
 
   private async handlePermissionsSlash(args: string[]): Promise<CodexActionResult> {
-    const activeSession = await this.getActiveSession();
+    const activeProject = await this.getActiveProject();
     if (args.length === 0) {
       return this.commandResult(
         [
-          this.currentSettingsText(activeSession),
+          this.currentSettingsText(activeProject),
           "",
           "Permission modes",
           ...CODEX_PERMISSION_PROFILES.map(
@@ -1183,23 +1180,23 @@ export class VoiceCodexOrchestrator extends EventEmitter {
               `${profile.mode} - ${profile.displayName}: approval ${profile.approvalPolicy}, sandbox ${profile.sandbox}`,
           ),
         ].join("\n"),
-        activeSession,
+        activeProject,
       );
     }
 
     const mode = permissionModeFromText(args.join(" "));
-    const settings = await this.setCodexSettings({ permissionMode: mode }, activeSession ? "chat" : "nextTurn");
+    const settings = await this.setCodexSettings({ permissionMode: mode }, activeProject ? "chat" : "nextTurn");
     return this.commandResult(
       `Updated /permissions to ${permissionProfile(mode).displayName}.\n${settingsText(settings)}`,
-      await this.getActiveSession(),
+      await this.getActiveProject(),
     );
   }
 
   private async handleReviewSlash(args: string[]): Promise<CodexActionResult> {
-    const { session, chat } = await this.requireChatContext();
+    const { project, chat } = await this.requireChatContext();
     if (!chat.codexThreadId) throw new Error("Active chat is missing a Codex thread id.");
     const { target, delivery } = parseReviewSlashArgs(args);
-    const turnSettings = this.resolveTurnSettings(session, chat);
+    const turnSettings = this.resolveTurnSettings(project, chat);
     const result = (await this.codex.request("review/start", {
       threadId: chat.codexThreadId,
       target,
@@ -1214,7 +1211,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       this.activeTurnReasoningEffortByThread.set(chat.codexThreadId, turnSettings.reasoningEffort);
       this.activeTurnPermissionModeByThread.set(chat.codexThreadId, turnSettings.permissionMode);
     }
-    const updated = await this.store.updateChat(session.id, chat.id, {
+    const updated = await this.store.updateChat(project.id, chat.id, {
       lastStatus: "Codex review started.",
     });
     this.status = "Codex review started.";
@@ -1225,10 +1222,10 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   }
 
   private async handleCompactSlash(): Promise<CodexActionResult> {
-    const { session, chat } = await this.requireChatContext();
+    const { project, chat } = await this.requireChatContext();
     if (!chat.codexThreadId) throw new Error("Active chat is missing a Codex thread id.");
     await this.codex.request("thread/compact/start", { threadId: chat.codexThreadId });
-    const updated = await this.store.updateChat(session.id, chat.id, {
+    const updated = await this.store.updateChat(project.id, chat.id, {
       lastStatus: "Context compaction requested.",
     });
     return this.commandResult(`Requested native /compact for "${chat.displayName}".`, updated);
@@ -1240,24 +1237,24 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       limit: 100,
       detail: verbose ? "full" : "toolsAndAuthOnly",
     })) as { data?: Array<{ name: string; tools?: Record<string, unknown>; authStatus?: string }> };
-    return this.commandResult(formatMcpServers(result.data ?? [], verbose), await this.getActiveSession());
+    return this.commandResult(formatMcpServers(result.data ?? [], verbose), await this.getActiveProject());
   }
 
   private async handleAppsSlash(): Promise<CodexActionResult> {
-    const session = await this.getActiveSession();
-    const chat = session ? activeChatForSession(session) : null;
+    const project = await this.getActiveProject();
+    const chat = project ? activeChatForProject(project) : null;
     const result = (await this.codex.request("app/list", {
       limit: 100,
       threadId: chat?.codexThreadId ?? null,
       forceRefetch: false,
     })) as { data?: Array<{ id: string; name: string; isEnabled: boolean; isAccessible: boolean; pluginDisplayNames?: string[] }> };
-    return this.commandResult(formatApps(result.data ?? []), session);
+    return this.commandResult(formatApps(result.data ?? []), project);
   }
 
   private async handlePluginsSlash(): Promise<CodexActionResult> {
-    const session = await this.getActiveSession();
+    const project = await this.getActiveProject();
     const result = (await this.codex.request("plugin/list", {
-      cwds: session?.folderPath ? [session.folderPath] : null,
+      cwds: project?.folderPath ? [project.folderPath] : null,
     })) as {
       marketplaces?: Array<{
         name: string;
@@ -1265,16 +1262,16 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       }>;
       marketplaceLoadErrors?: unknown[];
     };
-    return this.commandResult(formatPlugins(result.marketplaces ?? [], result.marketplaceLoadErrors ?? []), session);
+    return this.commandResult(formatPlugins(result.marketplaces ?? [], result.marketplaceLoadErrors ?? []), project);
   }
 
   private async nativeStatusText(): Promise<string> {
-    const session = await this.getActiveSession();
-    const chat = session ? activeChatForSession(session) : null;
+    const project = await this.getActiveProject();
+    const chat = project ? activeChatForProject(project) : null;
     const threadId = chat?.codexThreadId ?? null;
-    const settings = this.codexSettings(session);
-    const resolved = session
-      ? this.resolveTurnSettings(session, chat)
+    const settings = this.codexSettings(project);
+    const resolved = project
+      ? this.resolveTurnSettings(project, chat)
       : {
           model: settings.nextTurnModel ?? settings.defaultModel,
           reasoningEffort: settings.nextTurnReasoningEffort ?? settings.defaultReasoningEffort,
@@ -1282,7 +1279,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
         };
     const tokenUsage = threadId ? this.tokenUsageByThread.get(threadId) ?? null : null;
     const [configSummary, rateLimitSummary] = await Promise.all([
-      this.readConfigSummary(session),
+      this.readConfigSummary(project),
       this.readRateLimitSummary(),
     ]);
 
@@ -1290,7 +1287,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       "Codex /status",
       `Chat: ${chat?.displayName ?? "none"}`,
       `Thread: ${threadId ?? "none"}`,
-      `Folder: ${session?.folderPath ?? "none"}`,
+      `Folder: ${project?.folderPath ?? "none"}`,
       `Runtime: ${this.threadStatusByThread.get(threadId ?? "") ?? this.status}`,
       `Active turn: ${threadId ? this.activeTurnByThread.get(threadId) ?? "none" : "none"}`,
       `Effective next turn: model ${resolved.model ?? "default"}, reasoning ${resolved.reasoningEffort ?? "default"}, permissions ${permissionProfile(resolved.permissionMode).displayName}`,
@@ -1303,11 +1300,11 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     ].join("\n");
   }
 
-  private async readConfigSummary(session: VoiceSession | null): Promise<string> {
+  private async readConfigSummary(project: VoiceProject | null): Promise<string> {
     try {
       const result = (await this.codex.request("config/read", {
         includeLayers: false,
-        cwd: session?.folderPath ?? null,
+        cwd: project?.folderPath ?? null,
       })) as { config?: Record<string, unknown> };
       const config = result.config ?? {};
       return `Config defaults: model ${formatConfigValue(config.model)}, reasoning ${formatConfigValue(
@@ -1331,15 +1328,15 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     }
   }
 
-  private commandResult(message: string, session: VoiceSession | null = null): CodexActionResult {
+  private commandResult(message: string, project: VoiceProject | null = null): CodexActionResult {
     this.status = message.split("\n")[0] || "Native slash command handled.";
     this.emitEvent("app", "slashCommand", message);
     this.emitState();
-    return { kind: "command", message, turnId: null, session, chat: session ? activeChatForSession(session) : null };
+    return { kind: "command", message, turnId: null, project: project, chat: project ? activeChatForProject(project) : null };
   }
 
-  private currentSettingsText(activeSession: VoiceSession | null): string {
-    return settingsText(this.codexSettings(activeSession));
+  private currentSettingsText(activeProject: VoiceProject | null): string {
+    return settingsText(this.codexSettings(activeProject));
   }
 
   private assertKnownModel(model: string): void {
@@ -1380,7 +1377,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     void this.findChatByThread(threadId)
       .then((context) => {
         if (!context) return null;
-        return this.store.updateChat(context.session.id, context.chat.id, patch);
+        return this.store.updateChat(context.project.id, context.chat.id, patch);
       })
       .then(() => this.emitState())
       .catch((error) => {
@@ -1393,10 +1390,10 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   }
 
   private async findChatByThread(threadId: string): Promise<ChatContext | null> {
-    const sessions = await this.store.listSessions();
-    for (const session of sessions) {
-      const chat = session.chats.find((candidate) => candidate.codexThreadId === threadId && !candidate.archivedAt);
-      if (chat) return { session, chat };
+    const projects = await this.store.listProjects();
+    for (const project of projects) {
+      const chat = project.chats.find((candidate) => candidate.codexThreadId === threadId && !candidate.archivedAt);
+      if (chat) return { project, chat };
     }
     return null;
   }
@@ -1956,18 +1953,18 @@ function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function activeChatForSession(session: VoiceSession): VoiceChat | null {
-  const chats = session.chats.filter((chat) => !chat.archivedAt);
+function activeChatForProject(project: VoiceProject): VoiceChat | null {
+  const chats = project.chats.filter((chat) => !chat.archivedAt);
   return (
-    chats.find((chat) => chat.id === session.activeChatId) ??
-    chats.find((chat) => chat.codexThreadId === session.codexThreadId) ??
+    chats.find((chat) => chat.id === project.activeChatId) ??
+    chats.find((chat) => chat.codexThreadId === project.codexThreadId) ??
     chats[0] ??
     null
   );
 }
 
 function titleFromText(text: string): string {
-  return text.replace(/\s+/g, " ").trim().slice(0, 48) || "Voice Session";
+  return text.replace(/\s+/g, " ").trim().slice(0, 48) || "Voice Project";
 }
 
 function parseSlashInput(text: string): { command: string; args: string[]; rest: string } {
@@ -1982,14 +1979,14 @@ function nativeSlashHelpText(): string {
   return [
     "Native Codex slash commands exposed in this debug app:",
     "/status - show thread, model/reasoning, context, and rate-limit state.",
-    "/model [chat|next] [model|effort] [effort] - headless model picker; session is accepted as a chat alias.",
+    "/model [chat|next] [model|effort] [effort] - headless model picker.",
     "/review [base <branch>|commit <sha>|custom <instructions>] [detached] - start app-server review.",
     "/compact - compact the active Codex thread context.",
     "/mcp [verbose] - list MCP servers reported by app-server.",
     "/apps - list apps/connectors reported by app-server.",
     "/plugins - list plugins reported by app-server.",
     "/permissions [default|auto-review|full-access] - show or update chat permission mode.",
-    "/new [name] and /resume [sessionId] - voice-session equivalents of Codex conversation controls.",
+    "/new [name] and /resume [projectId] - voice-project equivalents of Codex conversation controls.",
     "Recognized but UI-only or not wired yet: /feedback, /plan-mode, /diff, /init, /agent, /mention, /stop, /fork, /side, /clear, /copy, /quit.",
   ].join("\n");
 }
@@ -2013,7 +2010,7 @@ function nativeUnsupportedSlashCommand(command: string): string | null {
     ps: "Recognized native /ps. Background terminal inventory is not exposed in this debug UI yet.",
     stop:
       "Recognized native /stop, which stops background terminals in Codex CLI. This debug app does not track those yet; use Interrupt to stop the active Codex turn.",
-    fork: "Recognized native /fork. Forking Codex threads is not wired into the voice-session folder model yet.",
+    fork: "Recognized native /fork. Forking Codex threads is not wired into the voice-project folder model yet.",
     side: "Recognized native /side. Side conversations are not wired into this debug UI yet.",
     clear: "Recognized native /clear. Use the Event Log Clear button for debug output; Codex thread history is unchanged.",
     copy: "Recognized native /copy. Copying the latest Codex output is not wired into this debug UI yet.",
@@ -2102,7 +2099,7 @@ function parseReviewSlashArgs(args: string[]): { target: ReviewTarget; delivery?
 }
 
 function isScopeToken(value: string | undefined): value is string {
-  return value === "chat" || value === "session" || value === "next" || value === "nextturn" || value === "next-turn";
+  return value === "chat" || value === "next" || value === "nextturn" || value === "next-turn";
 }
 
 function scopeFromToken(value: string): CodexSettingsScope {
@@ -2298,7 +2295,7 @@ function isMissingCodexThreadError(error: unknown): boolean {
 function codexTurnText(userText: string): string {
   return [
     "This request came through a local Realtime voice interface.",
-    "Treat the current working directory as this voice session's workspace.",
+    "Treat the current working directory as this voice project's workspace.",
     "Codex owns the actual planning, computer use, tool use, browser use, and execution.",
     "For requests that may require controlling desktop apps, the model should use tool_search to discover computer-use before choosing an approach; do this only once per new tool or plugin requested by the user.",
     "If the user's request mentions the Computer Use plugin, Codex must satisfy that request by discovering and using the actual computer-use plugin. Do not replace it with shell commands, open -a, AppleScript via terminal, or other terminal workarounds.",

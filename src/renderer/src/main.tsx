@@ -15,19 +15,19 @@ import {
   type ReasoningEffort,
   type ToolQuestionAnswer,
   type VoiceChat,
-  type VoiceSession,
+  type VoiceProject,
 } from "../../shared/types";
 import { RealtimeVoiceClient } from "./realtimeClient";
 import "./styles.css";
 
 const emptyState: AppState = {
   baseFolder: "",
-  sessions: [],
-  archivedSessions: [],
-  activeSession: null,
+  projects: [],
+  archivedProjects: [],
+  activeProject: null,
   runtime: {
     ready: false,
-    activeSessionId: null,
+    activeProjectId: null,
     activeChatId: null,
     activeTurnId: null,
     status: "Loading.",
@@ -35,15 +35,12 @@ const emptyState: AppState = {
     tokenUsage: null,
     pendingRequests: [],
     chats: [],
-    showSessionChats: false,
+    showProjectChats: false,
   },
   codexSettings: {
     chatModel: null,
     chatReasoningEffort: null,
     chatPermissionMode: DEFAULT_CODEX_PERMISSION_MODE,
-    sessionModel: null,
-    sessionReasoningEffort: null,
-    sessionPermissionMode: DEFAULT_CODEX_PERMISSION_MODE,
     nextTurnModel: null,
     nextTurnReasoningEffort: null,
     nextTurnPermissionMode: null,
@@ -69,15 +66,15 @@ type AppWindowKind = "voice" | "debug";
 
 type ContextMenuTarget =
   | {
-      kind: "session";
-      sessionId: string;
+      kind: "project";
+      projectId: string;
       label: string;
       x: number;
       y: number;
     }
   | {
       kind: "chat";
-      sessionId: string;
+      projectId: string;
       chatId: string;
       label: string;
       x: number;
@@ -85,8 +82,8 @@ type ContextMenuTarget =
     };
 
 type ArchivedChat = {
-  sessionId: string;
-  sessionName: string;
+  projectId: string;
+  projectName: string;
   chat: VoiceChat;
 };
 
@@ -99,7 +96,7 @@ function App(): React.ReactElement {
   const [windowKind] = useState<AppWindowKind>(() => appWindowKind());
   const [state, setState] = useState<AppState>(emptyState);
   const [events, setEvents] = useState<AppEvent[]>([]);
-  const [sessionName, setSessionName] = useState("");
+  const [projectName, setProjectName] = useState("");
   const [message, setMessage] = useState("");
   const [steer, setSteer] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -124,6 +121,8 @@ function App(): React.ReactElement {
       setEvents((current) => [event, ...current].slice(0, 250));
       if (event.source === "codex" && event.kind === "serverRequest") {
         voiceRef.current?.speakPendingRequest(event.raw as PendingCodexRequest);
+      } else if (event.source === "codex" && event.kind === "turn/completed") {
+        voiceRef.current?.notifyCodexTurnCompleted(event);
       } else if (event.source === "codex" && event.kind === "error") {
         voiceRef.current?.speakStatus(event.message);
       }
@@ -228,10 +227,10 @@ function App(): React.ReactElement {
         state={state}
         events={events}
         error={error}
-        sessionName={sessionName}
+        projectName={projectName}
         message={message}
         steer={steer}
-        setSessionName={setSessionName}
+        setProjectName={setProjectName}
         setMessage={setMessage}
         setSteer={setSteer}
         onDismissError={() => setError(null)}
@@ -300,16 +299,20 @@ function VoiceHome({
   const [newName, setNewName] = useState("");
   const [newChatName, setNewChatName] = useState("");
   const [query, setQuery] = useState("");
-  const activeSession = state.activeSession;
-  const featuredSession = activeSession ?? state.sessions[0] ?? null;
-  const sessionChats = useMemo(
-    () => chatSummariesForSession(activeSession, state),
-    [activeSession, state],
+  const projects = state.projects;
+  const archivedProjects = state.archivedProjects;
+  const activeProject = state.activeProject;
+  const activeProjectId = state.runtime.activeProjectId;
+  const showProjectChats = state.runtime.showProjectChats;
+  const featuredProject = activeProject ?? projects[0] ?? null;
+  const projectChats = useMemo(
+    () => chatSummariesForProject(activeProject, state),
+    [activeProject, state],
   );
-  const archivedChats = useMemo(() => archivedChatsForSessions(state.sessions), [state.sessions]);
-  const archivedCount = state.archivedSessions.length + archivedChats.length;
-  const recentSessions = state.sessions.slice(0, 3);
-  const modelScope = activeSession ? "chat" : "nextTurn";
+  const archivedChats = useMemo(() => archivedChatsForProjects(projects), [projects]);
+  const archivedCount = archivedProjects.length + archivedChats.length;
+  const recentProjects = projects.slice(0, 3);
+  const modelScope = activeProject ? "chat" : "nextTurn";
   const effectiveModel =
     state.codexSettings.nextTurnModel ??
     state.codexSettings.chatModel ??
@@ -329,12 +332,12 @@ function VoiceHome({
   const modelOptions = modelsForValue(state.codexSettings.models, effectiveModel);
   const pendingRequests = state.runtime.pendingRequests;
   const primaryPendingRequest = pendingRequests[0] ?? null;
-  const filteredSessions = state.sessions.filter((session) => {
+  const filteredProjects = projects.filter((project) => {
     const haystack = [
-      session.displayName,
-      session.folderPath,
-      session.lastStatus ?? "",
-      session.lastSummary ?? "",
+      project.displayName,
+      project.folderPath,
+      project.lastStatus ?? "",
+      project.lastSummary ?? "",
     ]
       .join(" ")
       .toLowerCase();
@@ -345,11 +348,11 @@ function VoiceHome({
 
   useEffect(() => {
     setChatsOpen(false);
-  }, [activeSession?.id]);
+  }, [activeProject?.id]);
 
   useEffect(() => {
-    setChatsOpen(state.runtime.showSessionChats);
-  }, [state.runtime.showSessionChats]);
+    setChatsOpen(showProjectChats);
+  }, [showProjectChats]);
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -369,17 +372,17 @@ function VoiceHome({
     };
   }, [contextMenu]);
 
-  async function createNewSession(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+  async function createNewProject(event: React.FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     await onAction(async () => {
-      await window.codexVoice.createSession(newName || undefined);
+      await window.codexVoice.createProject(newName || undefined);
       setNewName("");
       setNewOpen(false);
     });
   }
 
-  async function resumeSession(sessionId: string): Promise<void> {
-    await onAction(() => window.codexVoice.resumeSession(sessionId));
+  async function resumeProject(projectId: string): Promise<void> {
+    await onAction(() => window.codexVoice.resumeProject(projectId));
     setBrowseOpen(false);
   }
 
@@ -403,26 +406,26 @@ function VoiceHome({
     });
   }
 
-  function openSessionContextMenu(
+  function openProjectContextMenu(
     event: React.MouseEvent<HTMLElement>,
-    session: VoiceSession,
+    project: VoiceProject,
   ): void {
     event.preventDefault();
     setContextMenu({
-      kind: "session",
-      sessionId: session.id,
-      label: session.displayName,
+      kind: "project",
+      projectId: project.id,
+      label: project.displayName,
       x: event.clientX,
       y: event.clientY,
     });
   }
 
   function openChatContextMenu(event: React.MouseEvent<HTMLElement>, chat: ChatSummary): void {
-    if (!activeSession) return;
+    if (!activeProject) return;
     event.preventDefault();
     setContextMenu({
       kind: "chat",
-      sessionId: activeSession.id,
+      projectId: activeProject.id,
       chatId: chat.id,
       label: chat.title,
       x: event.clientX,
@@ -434,19 +437,19 @@ function VoiceHome({
     const target = contextMenu;
     if (!target) return;
     setContextMenu(null);
-    if (target.kind === "session") {
-      await onAction(() => window.codexVoice.archiveSession(target.sessionId));
+    if (target.kind === "project") {
+      await onAction(() => window.codexVoice.archiveProject(target.projectId));
       return;
     }
-    await onAction(() => window.codexVoice.archiveChat(target.chatId, target.sessionId));
+    await onAction(() => window.codexVoice.archiveChat(target.chatId, target.projectId));
   }
 
-  async function restoreSession(sessionId: string): Promise<void> {
-    await onAction(() => window.codexVoice.restoreSession(sessionId));
+  async function restoreProject(projectId: string): Promise<void> {
+    await onAction(() => window.codexVoice.restoreProject(projectId));
   }
 
-  async function restoreChat(sessionId: string, chatId: string): Promise<void> {
-    await onAction(() => window.codexVoice.restoreChat(chatId, sessionId));
+  async function restoreChat(projectId: string, chatId: string): Promise<void> {
+    await onAction(() => window.codexVoice.restoreChat(chatId, projectId));
   }
 
   async function saveApiKey(event: React.FormEvent<HTMLFormElement>): Promise<void> {
@@ -624,24 +627,24 @@ function VoiceHome({
             />
           )}
 
-          <section className="voice-session-region" aria-label="Sessions">
-            <FeaturedSessionCard
-              activeSessionId={state.runtime.activeSessionId}
-              session={featuredSession}
+          <section className="voice-project-region" aria-label="Projects">
+            <FeaturedProjectCard
+              activeProjectId={activeProjectId}
+              project={featuredProject}
               chatsOpen={chatsOpen}
               onCreate={() => setNewOpen(true)}
-              onResume={resumeSession}
-              onOpenMenu={openSessionContextMenu}
+              onResume={resumeProject}
+              onOpenMenu={openProjectContextMenu}
               onToggleChats={() => {
                 const next = !chatsOpen;
                 setChatsOpen(next);
-                void onAction(() => window.codexVoice.showSessionChats(next));
+                void onAction(() => window.codexVoice.showProjectChats(next));
               }}
             />
 
-            {chatsOpen && activeSession ? (
-              <SessionChatsPanel
-                chats={sessionChats}
+            {chatsOpen && activeProject ? (
+              <ProjectChatsPanel
+                chats={projectChats}
                 onNewChat={() => setNewChatOpen(true)}
                 onSwitchChat={() => setSwitchChatOpen(true)}
                 onSelectChat={switchChat}
@@ -651,35 +654,35 @@ function VoiceHome({
               <div className="voice-actions">
                 <button className="voice-action-button" onClick={() => setNewOpen(true)}>
                   <PlusIcon />
-                  <span>New session</span>
+                  <span>New project</span>
                 </button>
                 <button className="voice-action-button" onClick={() => setBrowseOpen(true)}>
                   <FolderIcon />
-                  <span>Browse sessions</span>
+                  <span>Browse projects</span>
                 </button>
               </div>
             )}
 
-            {(!chatsOpen || !activeSession) && (
+            {(!chatsOpen || !activeProject) && (
               <div className="recent-block">
-                <h2>Recent Sessions</h2>
+                <h2>Recent Projects</h2>
                 <div className="recent-list">
-                  {recentSessions.map((session) => (
+                  {recentProjects.map((project) => (
                     <button
-                      key={session.id}
+                      key={project.id}
                       className="recent-row"
-                      onClick={() => void resumeSession(session.id)}
-                      onContextMenu={(event) => openSessionContextMenu(event, session)}
+                      onClick={() => void resumeProject(project.id)}
+                      onContextMenu={(event) => openProjectContextMenu(event, project)}
                     >
                       <span>
-                        <strong>{session.displayName}</strong>
-                        <small>{formatSessionTime(session.updatedAt)}</small>
+                        <strong>{project.displayName}</strong>
+                        <small>{formatProjectTime(project.updatedAt)}</small>
                       </span>
                       <ChevronIcon />
                     </button>
                   ))}
-                  {recentSessions.length === 0 && (
-                    <div className="recent-empty">Recent sessions will appear here.</div>
+                  {recentProjects.length === 0 && (
+                    <div className="recent-empty">Recent projects will appear here.</div>
                   )}
                 </div>
               </div>
@@ -728,20 +731,20 @@ function VoiceHome({
 
       {newOpen && (
         <div className="voice-modal-backdrop" role="presentation">
-          <form className="voice-dialog" onSubmit={(event) => void createNewSession(event)}>
+          <form className="voice-dialog" onSubmit={(event) => void createNewProject(event)}>
             <div className="voice-dialog-header">
-              <h2>New session</h2>
+              <h2>New project</h2>
               <button type="button" aria-label="Close" onClick={() => setNewOpen(false)}>
                 <CloseIcon />
               </button>
             </div>
             <label className="voice-field">
-              Session name
+              Project name
               <input
                 autoFocus
                 value={newName}
                 onChange={(event) => setNewName(event.target.value)}
-                placeholder="Voice Session"
+                placeholder="Voice Project"
               />
             </label>
             <div className="voice-dialog-actions">
@@ -758,9 +761,9 @@ function VoiceHome({
 
       {browseOpen && (
         <div className="voice-modal-backdrop" role="presentation">
-          <section className="voice-dialog browse-dialog" aria-label="Browse sessions">
+          <section className="voice-dialog browse-dialog" aria-label="Browse projects">
             <div className="voice-dialog-header">
-              <h2>Browse sessions</h2>
+              <h2>Browse projects</h2>
               <button type="button" aria-label="Close" onClick={() => setBrowseOpen(false)}>
                 <CloseIcon />
               </button>
@@ -771,26 +774,26 @@ function VoiceHome({
                 autoFocus
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search sessions"
+                placeholder="Search projects"
               />
             </label>
             <div className="browse-list">
-              {filteredSessions.map((session) => (
+              {filteredProjects.map((project) => (
                 <button
-                  key={session.id}
+                  key={project.id}
                   className="browse-row"
-                  onClick={() => void resumeSession(session.id)}
-                  onContextMenu={(event) => openSessionContextMenu(event, session)}
+                  onClick={() => void resumeProject(project.id)}
+                  onContextMenu={(event) => openProjectContextMenu(event, project)}
                 >
                   <FolderIcon />
                   <span>
-                    <strong>{session.displayName}</strong>
-                    <small>{formatSessionTime(session.updatedAt)}</small>
+                    <strong>{project.displayName}</strong>
+                    <small>{formatProjectTime(project.updatedAt)}</small>
                   </span>
                   <ChevronIcon />
                 </button>
               ))}
-              {filteredSessions.length === 0 && <p className="browse-empty">No matching sessions.</p>}
+              {filteredProjects.length === 0 && <p className="browse-empty">No matching projects.</p>}
             </div>
           </section>
         </div>
@@ -836,7 +839,7 @@ function VoiceHome({
               </button>
             </div>
             <div className="browse-list">
-              {sessionChats.map((chat) => (
+              {projectChats.map((chat) => (
                 <button
                   key={chat.id}
                   className={`browse-row ${chat.active ? "selected-chat" : ""}`}
@@ -907,10 +910,10 @@ function VoiceHome({
 
       {archivedOpen && (
         <ArchivedDialog
-          sessions={state.archivedSessions}
+          projects={archivedProjects}
           chats={archivedChats}
           onClose={() => setArchivedOpen(false)}
-          onRestoreSession={restoreSession}
+          onRestoreProject={restoreProject}
           onRestoreChat={restoreChat}
         />
       )}
@@ -925,63 +928,63 @@ function VoiceHome({
   );
 }
 
-function FeaturedSessionCard({
-  activeSessionId,
+function FeaturedProjectCard({
+  activeProjectId,
   chatsOpen,
-  session,
+  project,
   onCreate,
   onResume,
   onOpenMenu,
   onToggleChats,
 }: {
-  activeSessionId: string | null;
+  activeProjectId: string | null;
   chatsOpen: boolean;
-  session: VoiceSession | null;
+  project: VoiceProject | null;
   onCreate: () => void;
-  onResume: (sessionId: string) => Promise<void>;
-  onOpenMenu: (event: React.MouseEvent<HTMLElement>, session: VoiceSession) => void;
+  onResume: (projectId: string) => Promise<void>;
+  onOpenMenu: (event: React.MouseEvent<HTMLElement>, project: VoiceProject) => void;
   onToggleChats: () => void;
 }): React.ReactElement {
-  if (!session) {
+  if (!project) {
     return (
-      <button className="featured-session-card empty-feature" onClick={onCreate}>
+      <button className="featured-project-card empty-feature" onClick={onCreate}>
         <span className="voice-folder-tile">
           <FolderIcon />
         </span>
         <span className="featured-copy">
-          <strong>No active session</strong>
-          <small>Create a session to begin</small>
+          <strong>No active project</strong>
+          <small>Create a project to begin</small>
         </span>
         <ChevronIcon />
       </button>
     );
   }
 
-  const active = session.id === activeSessionId;
+  const active = project.id === activeProjectId;
   return (
     <button
-      className={`featured-session-card ${chatsOpen && active ? "expanded" : ""}`}
+      className={`featured-project-card ${chatsOpen && active ? "expanded" : ""}`}
       aria-expanded={active ? chatsOpen : undefined}
-      onContextMenu={(event) => onOpenMenu(event, session)}
+      onContextMenu={(event) => onOpenMenu(event, project)}
       onClick={() => {
         if (active) {
           onToggleChats();
           return;
         }
-        void onResume(session.id);
+        void onResume(project.id);
       }}
     >
       <span className="voice-folder-tile">
         <FolderIcon />
       </span>
       <span className="featured-copy">
-        <strong>{session.displayName}</strong>
+        <strong>{project.displayName}</strong>
         <small>
-          {formatSessionTime(session.updatedAt)}
+          {formatProjectTime(project.updatedAt)}
           {active && (
             <>
               <span className="voice-meta-dot">.</span>
-              <span className="active-session-text">Active session</span>
+              <span className="active-project-text">Active project</span>
             </>
           )}
         </small>
@@ -999,7 +1002,7 @@ type ChatSummary = {
   active: boolean;
 };
 
-function SessionChatsPanel({
+function ProjectChatsPanel({
   chats,
   onNewChat,
   onSwitchChat,
@@ -1014,10 +1017,10 @@ function SessionChatsPanel({
 }): React.ReactElement {
   const activeChat = chats.find((chat) => chat.active) ?? null;
   return (
-    <div className="session-chats-panel">
-      <div className="session-chats-header">
+    <div className="project-chats-panel">
+      <div className="project-chats-header">
         <div>
-          <h2>Chats in this session</h2>
+          <h2>Chats in this project</h2>
           {activeChat && (
             <p>
               Active chat: <strong>{activeChat.title}</strong>
@@ -1026,21 +1029,21 @@ function SessionChatsPanel({
         </div>
         <span>{chats.length}</span>
       </div>
-      <div className="session-chat-list">
+      <div className="project-chat-list">
         {chats.map((chat) => (
           <button
             key={chat.id}
-            className={`session-chat-row ${chat.active ? "active" : ""}`}
+            className={`project-chat-row ${chat.active ? "active" : ""}`}
             onClick={() => void onSelectChat(chat.id)}
             onContextMenu={(event) => onOpenChatMenu(event, chat)}
           >
             <span className={`chat-status-dot ${chat.tone}`} />
-            <span className="session-chat-copy">
+            <span className="project-chat-copy">
               <strong>{chat.title}</strong>
               <small>{chat.detail}</small>
             </span>
             {chat.active && (
-              <span className="session-chat-trailing">
+              <span className="project-chat-trailing">
                 <span className="active-chat-pill">Active</span>
               </span>
             )}
@@ -1078,26 +1081,26 @@ function ArchiveContextMenu({
       onClick={(event) => event.stopPropagation()}
     >
       <button role="menuitem" onClick={onArchive}>
-        {target.kind === "session" ? "Archive session" : "Archive chat"}
+        {target.kind === "project" ? "Archive project" : "Archive chat"}
       </button>
     </div>
   );
 }
 
 function ArchivedDialog({
-  sessions,
+  projects,
   chats,
   onClose,
-  onRestoreSession,
+  onRestoreProject,
   onRestoreChat,
 }: {
-  sessions: VoiceSession[];
+  projects: VoiceProject[];
   chats: ArchivedChat[];
   onClose: () => void;
-  onRestoreSession: (sessionId: string) => Promise<void>;
-  onRestoreChat: (sessionId: string, chatId: string) => Promise<void>;
+  onRestoreProject: (projectId: string) => Promise<void>;
+  onRestoreChat: (projectId: string, chatId: string) => Promise<void>;
 }): React.ReactElement {
-  const empty = sessions.length === 0 && chats.length === 0;
+  const empty = projects.length === 0 && chats.length === 0;
   return (
     <div className="voice-modal-backdrop" role="presentation">
       <section className="voice-dialog archived-dialog" aria-label="Archived">
@@ -1109,21 +1112,21 @@ function ArchivedDialog({
         </div>
 
         {empty ? (
-          <p className="browse-empty">Archived chats and sessions will appear here.</p>
+          <p className="browse-empty">Archived chats and projects will appear here.</p>
         ) : (
           <div className="archived-sections">
-            {sessions.length > 0 && (
+            {projects.length > 0 && (
               <section className="archived-section">
-                <h3>Sessions</h3>
+                <h3>Projects</h3>
                 <div className="archived-list">
-                  {sessions.map((session) => (
-                    <article key={session.id} className="archived-row">
+                  {projects.map((project) => (
+                    <article key={project.id} className="archived-row">
                       <FolderIcon />
                       <span>
-                        <strong>{session.displayName}</strong>
-                        <small>{session.archivedAt ? formatSessionTime(session.archivedAt) : "Archived"}</small>
+                        <strong>{project.displayName}</strong>
+                        <small>{project.archivedAt ? formatProjectTime(project.archivedAt) : "Archived"}</small>
                       </span>
-                      <button type="button" onClick={() => void onRestoreSession(session.id)}>
+                      <button type="button" onClick={() => void onRestoreProject(project.id)}>
                         Restore
                       </button>
                     </article>
@@ -1136,18 +1139,18 @@ function ArchivedDialog({
               <section className="archived-section">
                 <h3>Chats</h3>
                 <div className="archived-list">
-                  {chats.map(({ sessionId, sessionName, chat }) => (
+                  {chats.map(({ projectId, projectName, chat }) => (
                     <article key={chat.id} className="archived-row">
                       <span className="chat-status-dot idle" />
                       <span>
                         <strong>{chat.displayName}</strong>
                         <small>
-                          {sessionName}
+                          {projectName}
                           <span className="voice-meta-dot">.</span>
-                          {chat.archivedAt ? formatSessionTime(chat.archivedAt) : "Archived"}
+                          {chat.archivedAt ? formatProjectTime(chat.archivedAt) : "Archived"}
                         </small>
                       </span>
-                      <button type="button" onClick={() => void onRestoreChat(sessionId, chat.id)}>
+                      <button type="button" onClick={() => void onRestoreChat(projectId, chat.id)}>
                         Restore
                       </button>
                     </article>
@@ -1183,10 +1186,10 @@ function DebugDashboard({
   state,
   events,
   error,
-  sessionName,
+  projectName,
   message,
   steer,
-  setSessionName,
+  setProjectName,
   setMessage,
   setSteer,
   onDismissError,
@@ -1198,10 +1201,10 @@ function DebugDashboard({
   state: AppState;
   events: AppEvent[];
   error: string | null;
-  sessionName: string;
+  projectName: string;
   message: string;
   steer: string;
-  setSessionName: React.Dispatch<React.SetStateAction<string>>;
+  setProjectName: React.Dispatch<React.SetStateAction<string>>;
   setMessage: React.Dispatch<React.SetStateAction<string>>;
   setSteer: React.Dispatch<React.SetStateAction<string>>;
   onDismissError: () => void;
@@ -1210,9 +1213,12 @@ function DebugDashboard({
   onRefresh: () => Promise<void>;
   onLogEvent: (event: AppEvent) => Promise<void>;
 }): React.ReactElement {
-  const activeFolder = state.activeSession?.folderPath ?? "No active session.";
+  const projects = state.projects;
+  const activeProject = state.activeProject;
+  const activeProjectId = state.runtime.activeProjectId;
+  const activeFolder = activeProject?.folderPath ?? "No active project.";
   const activeChatName =
-    (state.activeSession?.chats ?? []).find((chat) => chat.id === state.runtime.activeChatId && !chat.archivedAt)
+    (activeProject?.chats ?? []).find((chat) => chat.id === state.runtime.activeChatId && !chat.archivedAt)
       ?.displayName ?? "none";
   const effectiveNextModel =
     state.codexSettings.nextTurnModel ??
@@ -1253,42 +1259,42 @@ function DebugDashboard({
       </section>
 
       <section className="grid">
-        <aside className="panel sessions-panel">
+        <aside className="panel projects-panel">
           <div className="panel-header">
-            <h2>Sessions</h2>
+            <h2>Projects</h2>
             <button onClick={() => void onRefresh()}>Refresh</button>
           </div>
-          <div className="new-session-row">
+          <div className="new-project-row">
             <input
-              value={sessionName}
-              onChange={(event) => setSessionName(event.target.value)}
-              placeholder="Session name"
+              value={projectName}
+              onChange={(event) => setProjectName(event.target.value)}
+              placeholder="Project name"
             />
             <button
               className="primary"
               onClick={() =>
                 void onAction(async () => {
-                  await window.codexVoice.createSession(sessionName || undefined);
-                  setSessionName("");
+                  await window.codexVoice.createProject(projectName || undefined);
+                  setProjectName("");
                 })
               }
             >
-              New
+              New project
             </button>
           </div>
-          <div className="session-list">
-            {state.sessions.map((session) => (
+          <div className="project-list">
+            {projects.map((project) => (
               <button
-                key={session.id}
-                className={`session-card ${session.id === state.runtime.activeSessionId ? "active" : ""}`}
-                onClick={() => void onAction(() => window.codexVoice.resumeSession(session.id))}
+                key={project.id}
+                className={`project-card ${project.id === activeProjectId ? "active" : ""}`}
+                onClick={() => void onAction(() => window.codexVoice.resumeProject(project.id))}
               >
-                <strong>{session.displayName}</strong>
-                <span>{new Date(session.updatedAt).toLocaleString()}</span>
-                <small>{session.lastStatus ?? "No status yet."}</small>
+                <strong>{project.displayName}</strong>
+                <span>{new Date(project.updatedAt).toLocaleString()}</span>
+                <small>{project.lastStatus ?? "No status yet."}</small>
               </button>
             ))}
-            {state.sessions.length === 0 && <p className="empty">No voice sessions yet.</p>}
+            {projects.length === 0 && <p className="empty">No voice projects yet.</p>}
           </div>
         </aside>
 
@@ -1306,7 +1312,7 @@ function DebugDashboard({
             <span className="label">Codex status</span>
             <strong>{state.runtime.status}</strong>
             <small>
-              Chat: {activeChatName} | Thread: {state.activeSession?.codexThreadId ?? "none"} | Turn:{" "}
+              Chat: {activeChatName} | Thread: {activeProject?.codexThreadId ?? "none"} | Turn:{" "}
               {state.runtime.activeTurnId ?? "none"}
             </small>
             <small>
@@ -1341,7 +1347,7 @@ function DebugDashboard({
             <button
               onClick={() =>
                 void onAction(async () => {
-                  const summary = await window.codexVoice.summarizeSession(state.activeSession?.id);
+                  const summary = await window.codexVoice.summarizeProject(activeProject?.id);
                   await onLogEvent({
                     at: new Date().toISOString(),
                     source: "app",
@@ -1453,9 +1459,9 @@ function voiceOrbAriaLabel(
   return "Start voice";
 }
 
-function chatSummariesForSession(session: VoiceSession | null, state: AppState): ChatSummary[] {
-  if (!session) return [];
-  return (session.chats ?? []).filter((chat) => !chat.archivedAt).map((chat) => {
+function chatSummariesForProject(project: VoiceProject | null, state: AppState): ChatSummary[] {
+  if (!project) return [];
+  return (project.chats ?? []).filter((chat) => !chat.archivedAt).map((chat) => {
     const runtime = (state.runtime.chats ?? []).find((candidate) => candidate.chatId === chat.id);
     const waiting = Boolean(runtime?.pendingRequests.length);
     const working = Boolean(runtime?.activeTurnId);
@@ -1469,19 +1475,19 @@ function chatSummariesForSession(session: VoiceSession | null, state: AppState):
   });
 }
 
-function archivedChatsForSessions(sessions: VoiceSession[]): ArchivedChat[] {
-  return sessions.flatMap((session) =>
-    (session.chats ?? [])
+function archivedChatsForProjects(projects: VoiceProject[]): ArchivedChat[] {
+  return projects.flatMap((project) =>
+    (project.chats ?? [])
       .filter((chat) => chat.archivedAt)
       .map((chat) => ({
-        sessionId: session.id,
-        sessionName: session.displayName,
+        projectId: project.id,
+        projectName: project.displayName,
         chat,
       })),
   );
 }
 
-function formatSessionTime(iso: string): string {
+function formatProjectTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "Unknown time";
 
@@ -1676,7 +1682,7 @@ function CodexSettingsPanel({
           Chat model
           <select
             value={chatModel}
-            disabled={!state.activeSession}
+            disabled={!state.activeProject}
             onChange={(event) =>
               void onAction(() =>
                 window.codexVoice.setCodexSettings({ model: event.target.value || null }, "chat"),
@@ -1696,7 +1702,7 @@ function CodexSettingsPanel({
           Chat effort
           <select
             value={chatEffort}
-            disabled={!state.activeSession}
+            disabled={!state.activeProject}
             onChange={(event) =>
               void onAction(() =>
                 window.codexVoice.setCodexSettings(
@@ -1719,7 +1725,7 @@ function CodexSettingsPanel({
           Chat permissions
           <select
             value={chatPermissionMode}
-            disabled={!state.activeSession}
+            disabled={!state.activeProject}
             onChange={(event) =>
               void onAction(() =>
                 window.codexVoice.setCodexSettings(
@@ -1827,7 +1833,7 @@ function SettingReadout({
 
 function NativeSlashPanel(): React.ReactElement {
   const backed = ["/status", "/model", "/review", "/compact", "/mcp", "/apps", "/plugins"];
-  const session = ["/new", "/resume"];
+  const projectCommands = ["/new", "/resume"];
   const recognized = ["/feedback", "/plan-mode", "/diff", "/init", "/permissions", "/agent", "/stop"];
   return (
     <section className="slash-panel">
@@ -1840,9 +1846,9 @@ function NativeSlashPanel(): React.ReactElement {
         </div>
       </div>
       <div>
-        <span className="label">Voice session controls</span>
+        <span className="label">Voice project controls</span>
         <div className="slash-chip-row">
-          {session.map((command) => (
+          {projectCommands.map((command) => (
             <code key={command}>{command}</code>
           ))}
         </div>
@@ -2136,7 +2142,7 @@ function requestKindLabel(request: PendingCodexRequest): string {
 }
 
 function requestContextLabel(request: PendingCodexRequest): string {
-  return [request.sessionName, request.chatName].filter(Boolean).join(" / ");
+  return [request.projectName, request.chatName].filter(Boolean).join(" / ");
 }
 
 createRoot(document.getElementById("root")!).render(

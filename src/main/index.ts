@@ -4,7 +4,7 @@ import { clearOpenAiApiKey, saveOpenAiApiKey } from "./apiKeyStore";
 import appIcon from "./assets/app-icon.png?asset";
 import { CodexBridge } from "./codexBridge";
 import { VoiceCodexOrchestrator } from "./orchestrator";
-import { SessionStore } from "./sessionStore";
+import { ProjectStore } from "./projectStore";
 import type {
   ApprovalDecision,
   AppEvent,
@@ -129,7 +129,7 @@ function normalizeAppEvent(payload: AppEvent): AppEvent {
 }
 
 async function boot(): Promise<void> {
-  const store = new SessionStore();
+  const store = new ProjectStore();
   const codex = new CodexBridge();
   orchestrator = new VoiceCodexOrchestrator(store, codex);
 
@@ -143,6 +143,13 @@ async function boot(): Promise<void> {
 function requireOrchestrator(): VoiceCodexOrchestrator {
   if (!orchestrator) throw new Error("App is still starting.");
   return orchestrator;
+}
+
+function registerIpcHandler(
+  channel: string,
+  listener: Parameters<typeof ipcMain.handle>[1],
+): void {
+  ipcMain.handle(channel, listener);
 }
 
 app.whenReady().then(() => {
@@ -164,63 +171,79 @@ app.on("before-quit", () => {
 });
 
 function registerIpc(): void {
-  ipcMain.handle("app:getState", () => requireOrchestrator().state());
-  ipcMain.handle("app:openDebugWindow", () => {
+  registerIpcHandler("app:getState", () => requireOrchestrator().state());
+  registerIpcHandler("app:openDebugWindow", () => {
     createDebugWindow();
   });
-  ipcMain.handle("app:getEvents", () => bufferedEvents);
-  ipcMain.handle("app:clearEvents", () => {
+  registerIpcHandler("app:getEvents", () => bufferedEvents);
+  registerIpcHandler("app:clearEvents", () => {
     bufferedEvents = [];
   });
-  ipcMain.handle("app:logEvent", (_event, payload: AppEvent) => {
+  registerIpcHandler("app:logEvent", (_event, payload: AppEvent) => {
     publishEvent(normalizeAppEvent(payload));
   });
-  ipcMain.handle("sessions:create", (_event, payload: { name?: string }) =>
-    requireOrchestrator().createSession(payload.name),
+  registerIpcHandler(
+    "projects:create",
+    (_event, payload: { name?: string }) => requireOrchestrator().createProject(payload.name),
   );
-  ipcMain.handle("sessions:resume", (_event, payload: { sessionId: string }) =>
-    requireOrchestrator().resumeSession(payload.sessionId),
+  registerIpcHandler(
+    "projects:resume",
+    (_event, payload: { projectId: string }) => requireOrchestrator().resumeProject(payload.projectId),
   );
-  ipcMain.handle("sessions:archive", (_event, payload: { sessionId: string }) =>
-    requireOrchestrator().archiveSession(payload.sessionId),
+  registerIpcHandler(
+    "projects:archive",
+    (_event, payload: { projectId: string }) => requireOrchestrator().archiveProject(payload.projectId),
   );
-  ipcMain.handle("sessions:restore", (_event, payload: { sessionId: string }) =>
-    requireOrchestrator().restoreSession(payload.sessionId),
+  registerIpcHandler(
+    "projects:restore",
+    (_event, payload: { projectId: string }) => requireOrchestrator().restoreProject(payload.projectId),
   );
-  ipcMain.handle("chats:create", (_event, payload: { name: string; sessionId?: string }) =>
-    requireOrchestrator().createChat(payload.name, payload.sessionId),
+  registerIpcHandler(
+    "projects:createChat",
+    (_event, payload: { name: string; projectId?: string }) =>
+      requireOrchestrator().createChat(payload.name, payload.projectId),
   );
-  ipcMain.handle("chats:switch", (_event, payload: { chatId: string; sessionId?: string }) =>
-    requireOrchestrator().switchChat(payload.chatId, payload.sessionId),
+  registerIpcHandler(
+    "projects:switchChat",
+    (_event, payload: { chatId: string; projectId?: string }) =>
+      requireOrchestrator().switchChat(payload.chatId, payload.projectId),
   );
-  ipcMain.handle("chats:archive", (_event, payload: { chatId: string; sessionId?: string }) =>
-    requireOrchestrator().archiveChat(payload.chatId, payload.sessionId),
+  registerIpcHandler(
+    "projects:archiveChat",
+    (_event, payload: { chatId: string; projectId?: string }) =>
+      requireOrchestrator().archiveChat(payload.chatId, payload.projectId),
   );
-  ipcMain.handle("chats:restore", (_event, payload: { chatId: string; sessionId?: string }) =>
-    requireOrchestrator().restoreChat(payload.chatId, payload.sessionId),
+  registerIpcHandler(
+    "projects:restoreChat",
+    (_event, payload: { chatId: string; projectId?: string }) =>
+      requireOrchestrator().restoreChat(payload.chatId, payload.projectId),
   );
-  ipcMain.handle("chats:list", (_event, payload: { sessionId?: string }) =>
-    requireOrchestrator().listChats(payload.sessionId),
+  registerIpcHandler(
+    "projects:listChats",
+    (_event, payload: { projectId?: string }) => requireOrchestrator().listChats(payload.projectId),
   );
-  ipcMain.handle("chats:show", (_event, payload: { open?: boolean }) =>
-    requireOrchestrator().showSessionChats(payload.open),
+  registerIpcHandler(
+    "projects:showChats",
+    (_event, payload: { open?: boolean }) => requireOrchestrator().showProjectChats(payload.open),
   );
-  ipcMain.handle("chats:status", (_event, payload: { chatId?: string }) =>
+  registerIpcHandler("projects:chatStatus", (_event, payload: { chatId?: string }) =>
     requireOrchestrator().getChatStatus(payload.chatId),
   );
-  ipcMain.handle("sessions:summarize", (_event, payload: { sessionId?: string; chatId?: string }) =>
-    requireOrchestrator().summarizeSession(payload.sessionId, payload.chatId),
+  registerIpcHandler(
+    "projects:summarize",
+    (_event, payload: { projectId?: string; chatId?: string }) =>
+      requireOrchestrator().summarizeProject(payload.projectId, payload.chatId),
   );
-  ipcMain.handle("codex:send", (_event, payload: { text: string; chatId?: string }) =>
+  registerIpcHandler("codex:send", (_event, payload: { text: string; chatId?: string }) =>
     requireOrchestrator().sendToCodex(payload.text, payload.chatId),
   );
-  ipcMain.handle("codex:steer", (_event, payload: { text: string; chatId?: string }) =>
+  registerIpcHandler("codex:steer", (_event, payload: { text: string; chatId?: string }) =>
     requireOrchestrator().steerCodex(payload.text, payload.chatId),
   );
-  ipcMain.handle("codex:interrupt", (_event, payload?: { chatId?: string }) =>
+  registerIpcHandler("codex:interrupt", (_event, payload?: { chatId?: string }) =>
     requireOrchestrator().interruptCodex(payload?.chatId),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     "codex:setSettings",
     (
       _event,
@@ -234,23 +257,23 @@ function registerIpc(): void {
       },
     ) => requireOrchestrator().setCodexSettings(payload.settings, payload.scope),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     "codex:answerApproval",
     (_event, payload: { requestId: string | number; decision: ApprovalDecision }) =>
       requireOrchestrator().answerApproval(payload.requestId, payload.decision),
   );
-  ipcMain.handle(
+  registerIpcHandler(
     "codex:answerToolQuestion",
     (_event, payload: { requestId: string | number; answers: ToolQuestionAnswer[] }) =>
       requireOrchestrator().answerToolQuestion(payload.requestId, payload.answers),
   );
-  ipcMain.handle("settings:saveOpenAiApiKey", (_event, payload: { apiKey: string }) => {
+  registerIpcHandler("settings:saveOpenAiApiKey", (_event, payload: { apiKey: string }) => {
     saveOpenAiApiKey(payload.apiKey);
   });
-  ipcMain.handle("settings:clearOpenAiApiKey", () => {
+  registerIpcHandler("settings:clearOpenAiApiKey", () => {
     clearOpenAiApiKey();
   });
-  ipcMain.handle("realtime:createClientSecret", () =>
+  registerIpcHandler("realtime:createClientSecret", () =>
     requireOrchestrator().createRealtimeClientSecret(),
   );
 }

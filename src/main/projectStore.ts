@@ -10,28 +10,28 @@ import {
   type CodexPermissionMode,
   type ReasoningEffort,
   type VoiceChat,
-  type VoiceSession,
+  type VoiceProject,
 } from "../shared/types";
 
-type SessionIndex = {
+type ProjectIndex = {
   version: 1;
-  sessions: VoiceSession[];
+  projects: VoiceProject[];
 };
 
-type ListSessionsOptions = {
+type ListProjectsOptions = {
   includeArchived?: boolean;
 };
 
-const INDEX_FILE = ".codex-voice-index.json";
-const SESSION_FILE = ".codex-voice-session.json";
+const INDEX_FILE = ".codex-voice-projects.json";
+const PROJECT_FILE = ".codex-voice-project.json";
 
-export class SessionStore {
+export class ProjectStore {
   readonly baseFolder: string;
   private readonly indexPath: string;
   private readonly lockPath: string;
   private mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(baseFolder = path.join(app.getPath("documents"), "Codex Voice Sessions")) {
+  constructor(baseFolder = path.join(app.getPath("documents"), "Codex Voice Projects")) {
     this.baseFolder = baseFolder;
     this.indexPath = path.join(baseFolder, INDEX_FILE);
     this.lockPath = `${this.indexPath}.lock`;
@@ -40,58 +40,54 @@ export class SessionStore {
   async ensureReady(): Promise<void> {
     await mkdir(this.baseFolder, { recursive: true });
     await this.enqueueMutation(async () => {
-      if (!existsSync(this.indexPath)) {
-        await this.writeIndex({ version: 1, sessions: await this.readSessionsFromFolders() });
-        return;
-      }
       const index = await this.readIndexFile();
       if (!index) {
-        await this.writeIndex({ version: 1, sessions: await this.readSessionsFromFolders() });
+        await this.writeIndex({ version: 1, projects: await this.readProjectsFromFolders() });
         return;
       }
-      if (index.sessions.length === 0) {
-        const sessions = await this.readSessionsFromFolders();
-        if (sessions.length > 0) {
-          await this.writeIndex({ version: 1, sessions });
+      if (index.projects.length === 0) {
+        const projects = await this.readProjectsFromFolders();
+        if (projects.length > 0) {
+          await this.writeIndex({ version: 1, projects });
         }
       }
     });
   }
 
-  async listSessions(options: ListSessionsOptions = {}): Promise<VoiceSession[]> {
+  async listProjects(options: ListProjectsOptions = {}): Promise<VoiceProject[]> {
     const index = await this.readIndex();
-    return index.sessions
-      .filter((session) => options.includeArchived || !session.archivedAt)
+    return index.projects
+      .filter((project) => options.includeArchived || !project.archivedAt)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  async listArchivedSessions(): Promise<VoiceSession[]> {
-    const sessions = await this.listSessions({ includeArchived: true });
-    return sessions.filter((session) => session.archivedAt);
+  async listArchivedProjects(): Promise<VoiceProject[]> {
+    const projects = await this.listProjects({ includeArchived: true });
+    return projects.filter((project) => project.archivedAt);
   }
 
-  async getSession(id: string, options: ListSessionsOptions = {}): Promise<VoiceSession | null> {
-    const sessions = await this.listSessions(options);
-    return sessions.find((session) => session.id === id) ?? null;
+  async getProject(id: string, options: ListProjectsOptions = {}): Promise<VoiceProject | null> {
+    const projects = await this.listProjects(options);
+    return projects.find((project) => project.id === id) ?? null;
   }
 
-  async getMostRecent(): Promise<VoiceSession | null> {
-    const sessions = await this.listSessions();
-    return sessions[0] ?? null;
+  async getMostRecentProject(): Promise<VoiceProject | null> {
+    const projects = await this.listProjects();
+    return projects[0] ?? null;
   }
 
-  async createSession(displayName?: string): Promise<VoiceSession> {
+  async createProject(displayName?: string): Promise<VoiceProject> {
     const now = new Date();
     const id = randomUUID();
-    const safeName = sanitizeSessionName(displayName || "Voice Session");
+    const safeName = sanitizeProjectName(displayName || "Voice Project");
     const folderName = `${formatFolderTimestamp(now)} - ${safeName}`;
     const folderPath = await this.uniqueFolderPath(folderName);
 
     await mkdir(folderPath, { recursive: true });
 
-    const session: VoiceSession = {
+    const project: VoiceProject = {
       id,
-      displayName: displayName?.trim() || "Voice Session",
+      displayName: displayName?.trim() || "Voice Project",
       folderPath,
       activeChatId: null,
       chats: [],
@@ -103,70 +99,70 @@ export class SessionStore {
       updatedAt: now.toISOString(),
       archivedAt: null,
       lastSummary: null,
-      lastStatus: "Created session folder.",
+      lastStatus: "Created project folder.",
     };
 
-    await this.upsertSession(session);
-    return session;
+    await this.upsertProject(project);
+    return project;
   }
 
-  async upsertSession(session: VoiceSession): Promise<VoiceSession> {
+  async upsertProject(project: VoiceProject): Promise<VoiceProject> {
     return this.enqueueMutation(async () => {
-      await mkdir(session.folderPath, { recursive: true });
+      await mkdir(project.folderPath, { recursive: true });
       const index = await this.readIndex();
-      const nextSession = { ...session, updatedAt: new Date().toISOString() };
-      const nextSessions = [
-        nextSession,
-        ...index.sessions.filter((existing) => existing.id !== session.id),
+      const nextProject = { ...project, updatedAt: new Date().toISOString() };
+      const nextProjects = [
+        nextProject,
+        ...index.projects.filter((existing) => existing.id !== project.id),
       ];
-      await this.writeJsonAtomic(path.join(session.folderPath, SESSION_FILE), nextSession);
-      await this.writeIndex({ version: 1, sessions: nextSessions });
-      return nextSession;
+      await this.writeJsonAtomic(path.join(project.folderPath, PROJECT_FILE), nextProject);
+      await this.writeIndex({ version: 1, projects: nextProjects });
+      return nextProject;
     });
   }
 
-  async updateSession(id: string, patch: Partial<VoiceSession>): Promise<VoiceSession> {
-    const existing = await this.getSession(id);
+  async updateProject(id: string, patch: Partial<VoiceProject>): Promise<VoiceProject> {
+    const existing = await this.getProject(id);
     if (!existing) {
-      throw new Error(`Unknown voice session: ${id}`);
+      throw new Error(`Unknown voice project: ${id}`);
     }
-    return this.upsertSession({ ...existing, ...patch });
+    return this.upsertProject({ ...existing, ...patch });
   }
 
-  async archiveSession(id: string): Promise<VoiceSession> {
-    const existing = await this.getSession(id, { includeArchived: true });
+  async archiveProject(id: string): Promise<VoiceProject> {
+    const existing = await this.getProject(id, { includeArchived: true });
     if (!existing) {
-      throw new Error(`Unknown voice session: ${id}`);
+      throw new Error(`Unknown voice project: ${id}`);
     }
     if (existing.archivedAt) return existing;
-    return this.upsertSession({
+    return this.upsertProject({
       ...existing,
       archivedAt: new Date().toISOString(),
-      lastStatus: "Archived session.",
+      lastStatus: "Archived project.",
     });
   }
 
-  async restoreSession(id: string): Promise<VoiceSession> {
-    const existing = await this.getSession(id, { includeArchived: true });
+  async restoreProject(id: string): Promise<VoiceProject> {
+    const existing = await this.getProject(id, { includeArchived: true });
     if (!existing) {
-      throw new Error(`Unknown voice session: ${id}`);
+      throw new Error(`Unknown voice project: ${id}`);
     }
-    return this.upsertSession({
+    return this.upsertProject({
       ...existing,
       archivedAt: null,
-      lastStatus: "Restored session.",
+      lastStatus: "Restored project.",
     });
   }
 
   async addChat(
-    sessionId: string,
+    projectId: string,
     displayName: string,
     codexThreadId: string,
     settings: { model?: string | null; reasoningEffort?: ReasoningEffort | null; permissionMode?: CodexPermissionMode } = {},
-  ): Promise<VoiceSession> {
-    const existing = await this.getSession(sessionId);
+  ): Promise<VoiceProject> {
+    const existing = await this.getProject(projectId);
     if (!existing) {
-      throw new Error(`Unknown voice session: ${sessionId}`);
+      throw new Error(`Unknown voice project: ${projectId}`);
     }
 
     const now = new Date().toISOString();
@@ -188,7 +184,7 @@ export class SessionStore {
       lastStatus: "Codex thread started.",
     };
 
-    return this.upsertSession({
+    return this.upsertProject({
       ...existing,
       activeChatId: chat.id,
       codexThreadId,
@@ -197,24 +193,24 @@ export class SessionStore {
     });
   }
 
-  async archiveChat(sessionId: string, chatId: string): Promise<VoiceSession> {
-    return this.setChatArchived(sessionId, chatId, new Date().toISOString());
+  async archiveChat(projectId: string, chatId: string): Promise<VoiceProject> {
+    return this.setChatArchived(projectId, chatId, new Date().toISOString());
   }
 
-  async restoreChat(sessionId: string, chatId: string): Promise<VoiceSession> {
-    return this.setChatArchived(sessionId, chatId, null);
+  async restoreChat(projectId: string, chatId: string): Promise<VoiceProject> {
+    return this.setChatArchived(projectId, chatId, null);
   }
 
-  async setActiveChat(sessionId: string, chatId: string): Promise<VoiceSession> {
-    const existing = await this.getSession(sessionId);
+  async setActiveChat(projectId: string, chatId: string): Promise<VoiceProject> {
+    const existing = await this.getProject(projectId);
     if (!existing) {
-      throw new Error(`Unknown voice session: ${sessionId}`);
+      throw new Error(`Unknown voice project: ${projectId}`);
     }
     const chat = existing.chats.find((candidate) => candidate.id === chatId);
     if (!chat) {
       throw new Error(`Unknown chat: ${chatId}`);
     }
-    return this.upsertSession({
+    return this.upsertProject({
       ...existing,
       activeChatId: chat.id,
       codexThreadId: chat.codexThreadId,
@@ -222,10 +218,10 @@ export class SessionStore {
     });
   }
 
-  async updateChat(sessionId: string, chatId: string, patch: Partial<VoiceChat>): Promise<VoiceSession> {
-    const existing = await this.getSession(sessionId);
+  async updateChat(projectId: string, chatId: string, patch: Partial<VoiceChat>): Promise<VoiceProject> {
+    const existing = await this.getProject(projectId);
     if (!existing) {
-      throw new Error(`Unknown voice session: ${sessionId}`);
+      throw new Error(`Unknown voice project: ${projectId}`);
     }
     const now = new Date().toISOString();
     let activeThreadId = existing.codexThreadId;
@@ -238,7 +234,7 @@ export class SessionStore {
     if (!chats.some((chat) => chat.id === chatId)) {
       throw new Error(`Unknown chat: ${chatId}`);
     }
-    return this.upsertSession({
+    return this.upsertProject({
       ...existing,
       chats,
       codexThreadId: activeThreadId,
@@ -248,13 +244,13 @@ export class SessionStore {
   }
 
   private async setChatArchived(
-    sessionId: string,
+    projectId: string,
     chatId: string,
     archivedAt: string | null,
-  ): Promise<VoiceSession> {
-    const existing = await this.getSession(sessionId, { includeArchived: true });
+  ): Promise<VoiceProject> {
+    const existing = await this.getProject(projectId, { includeArchived: true });
     if (!existing) {
-      throw new Error(`Unknown voice session: ${sessionId}`);
+      throw new Error(`Unknown voice project: ${projectId}`);
     }
 
     const now = new Date().toISOString();
@@ -285,7 +281,7 @@ export class SessionStore {
       null;
     const activeChat = activeChatId ? chats.find((chat) => chat.id === activeChatId) ?? null : null;
 
-    return this.upsertSession({
+    return this.upsertProject({
       ...existing,
       activeChatId,
       codexThreadId: activeChat?.codexThreadId ?? null,
@@ -304,46 +300,46 @@ export class SessionStore {
     return candidate;
   }
 
-  private async readIndex(): Promise<SessionIndex> {
+  private async readIndex(): Promise<ProjectIndex> {
     await mkdir(this.baseFolder, { recursive: true });
     const index = await this.readIndexFile();
     if (index) return index;
-    return { version: 1, sessions: await this.readSessionsFromFolders() };
+    return { version: 1, projects: await this.readProjectsFromFolders() };
   }
 
-  private async readIndexFile(): Promise<SessionIndex | null> {
+  private async readIndexFile(): Promise<ProjectIndex | null> {
     try {
       const raw = await readFile(this.indexPath, "utf8");
-      const parsed = JSON.parse(raw) as SessionIndex;
+      const parsed = JSON.parse(raw) as ProjectIndex;
       return {
         version: 1,
-        sessions: Array.isArray(parsed.sessions) ? parsed.sessions.map(normalizeSession) : [],
+        projects: Array.isArray(parsed.projects) ? parsed.projects.map(normalizeProject) : [],
       };
     } catch {
       return null;
     }
   }
 
-  private async writeIndex(index: SessionIndex): Promise<void> {
+  private async writeIndex(index: ProjectIndex): Promise<void> {
     await mkdir(this.baseFolder, { recursive: true });
     await this.writeJsonAtomic(this.indexPath, index);
   }
 
-  private async readSessionsFromFolders(): Promise<VoiceSession[]> {
+  private async readProjectsFromFolders(): Promise<VoiceProject[]> {
     const entries = await readdir(this.baseFolder, { withFileTypes: true });
-    const sessions: VoiceSession[] = [];
+    const projects: VoiceProject[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const sessionPath = path.join(this.baseFolder, entry.name, SESSION_FILE);
-      if (!existsSync(sessionPath)) continue;
+      const projectPath = path.join(this.baseFolder, entry.name, PROJECT_FILE);
+      if (!existsSync(projectPath)) continue;
       try {
-        const session = normalizeSession(JSON.parse(await readFile(sessionPath, "utf8")));
-        sessions.push(session);
+        const project = normalizeProject(JSON.parse(await readFile(projectPath, "utf8")));
+        projects.push(project);
       } catch {
         // Ignore malformed sidecar files; the debug UI should remain bootable.
       }
     }
-    return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return projects.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   private async writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
@@ -411,61 +407,41 @@ export class SessionStore {
   }
 }
 
-function normalizeSession(value: unknown): VoiceSession {
-  const session = value as VoiceSession & {
-    codexThreadId?: string | null;
+function normalizeProject(value: unknown): VoiceProject {
+  const project = value as VoiceProject & {
     activeChatId?: string | null;
     chats?: VoiceChat[];
   };
-  const createdAt = stringOrNow(session.createdAt);
-  const updatedAt = stringOrNow(session.updatedAt);
-  const legacyThreadId = stringOrNull(session.codexThreadId);
-  const legacyModel = stringOrNull(session.model) ?? DEFAULT_CODEX_MODEL;
-  const legacyReasoningEffort =
-    reasoningEffortOrNull(session.reasoningEffort) ?? DEFAULT_CODEX_REASONING_EFFORT;
-  const legacyPermissionMode = permissionModeOrDefault(session.permissionMode);
-  let chats = Array.isArray(session.chats)
-    ? session.chats
-        .map((chat) => normalizeChat(chat, createdAt, updatedAt, legacyModel, legacyReasoningEffort, legacyPermissionMode))
+  const createdAt = stringOrNow(project.createdAt);
+  const updatedAt = stringOrNow(project.updatedAt);
+  const projectModel = stringOrNull(project.model) ?? DEFAULT_CODEX_MODEL;
+  const projectReasoningEffort =
+    reasoningEffortOrNull(project.reasoningEffort) ?? DEFAULT_CODEX_REASONING_EFFORT;
+  const projectPermissionMode = permissionModeOrDefault(project.permissionMode);
+  const chats = Array.isArray(project.chats)
+    ? project.chats
+        .map((chat) => normalizeChat(chat, createdAt, updatedAt, projectModel, projectReasoningEffort, projectPermissionMode))
         .filter((chat) => chat.id)
     : [];
 
-  if (chats.length === 0 && legacyThreadId) {
-    chats = [
-      {
-        id: `${session.id}-main`,
-        displayName: "Main task",
-        codexThreadId: legacyThreadId,
-        model: legacyModel,
-        reasoningEffort: legacyReasoningEffort,
-        permissionMode: legacyPermissionMode,
-        createdAt,
-        updatedAt,
-        archivedAt: null,
-        lastSummary: session.lastSummary ?? null,
-        lastStatus: session.lastStatus ?? "Codex thread started.",
-      },
-    ];
-  }
-
   const unarchivedChats = chats.filter((chat) => !chat.archivedAt);
   const activeChatId =
-    stringOrNull(session.activeChatId) && unarchivedChats.some((chat) => chat.id === session.activeChatId)
-      ? session.activeChatId
+    stringOrNull(project.activeChatId) && unarchivedChats.some((chat) => chat.id === project.activeChatId)
+      ? project.activeChatId
       : unarchivedChats[0]?.id ?? null;
   const activeChat = unarchivedChats.find((chat) => chat.id === activeChatId) ?? null;
 
   return {
-    ...session,
+    ...project,
     createdAt,
     updatedAt,
-    archivedAt: stringOrNull(session.archivedAt),
+    archivedAt: stringOrNull(project.archivedAt),
     activeChatId,
     chats,
     codexThreadId: activeChat?.codexThreadId ?? null,
-    model: stringOrNull(session.model),
-    reasoningEffort: reasoningEffortOrNull(session.reasoningEffort),
-    permissionMode: permissionModeOrDefault(session.permissionMode),
+    model: stringOrNull(project.model),
+    reasoningEffort: reasoningEffortOrNull(project.reasoningEffort),
+    permissionMode: permissionModeOrDefault(project.permissionMode),
   };
 }
 
@@ -521,14 +497,14 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function sanitizeSessionName(name: string): string {
+function sanitizeProjectName(name: string): string {
   return name
     .replace(/[^\w\s.-]/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 64)
     .replace(/\s/g, "-")
-    .toLowerCase() || "voice-session";
+    .toLowerCase() || "voice-project";
 }
 
 function formatFolderTimestamp(date: Date): string {

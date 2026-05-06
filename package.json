@@ -2,7 +2,7 @@
   "name": "voice-computer-use",
   "version": "0.0.1",
   "private": true,
-  "description": "A local Realtime voice layer around Codex app-server sessions.",
+  "description": "A local Realtime voice layer around Codex app-server projects.",
   "license": "MIT",
   "main": "out/main/index.js",
   "scripts": {
