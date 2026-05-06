@@ -11,6 +11,9 @@ import type {
   CodexSettingsScope,
   CodexThreadTokenUsage,
   CodexRuntimeState,
+  PendingRequestDetail,
+  PendingRequestQuestion,
+  PendingRequestQuestionOption,
   PendingCodexRequest,
   ReasoningEffort,
   ToolQuestionAnswer,
@@ -105,7 +108,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       sessions,
       archivedSessions,
       activeSession,
-      runtime: this.runtimeState(activeSession),
+      runtime: this.runtimeState(activeSession, sessions),
       codexSettings: this.codexSettings(activeSession),
       realtime: realtimeConfig(),
     };
@@ -440,6 +443,9 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     }
     this.pendingRequests.delete(String(requestId));
     this.status = `Answered ${request.title}: ${decision}`;
+    if (request.threadId) {
+      this.updateChatForThread(request.threadId, { lastStatus: `Answered ${request.title}: ${decision}` });
+    }
     this.emitEvent("app", "approvalAnswered", `Answered ${request.title}: ${decision}`, {
       requestId,
       decision,
@@ -450,15 +456,25 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   async answerToolQuestion(requestId: string | number, answers: ToolQuestionAnswer[]): Promise<void> {
     const request = this.pendingRequests.get(String(requestId));
     if (!request) throw new Error(`Unknown pending request: ${requestId}`);
+    if (request.method !== "item/tool/requestUserInput") {
+      throw new Error(`Pending request ${requestId} is not a Codex question.`);
+    }
+    const normalizedAnswers = normalizeToolQuestionAnswers(request, answers);
     const result = {
       answers: Object.fromEntries(
-        answers.map((answer) => [answer.questionId, { answers: answer.answers }]),
+        normalizedAnswers.map((answer) => [answer.questionId, { answers: answer.answers }]),
       ),
     };
     this.codex.respond(requestId, result);
     this.pendingRequests.delete(String(requestId));
     this.status = "Answered Codex question.";
-    this.emitEvent("app", "questionAnswered", "Answered a Codex question.", { requestId, answers });
+    if (request.threadId) {
+      this.updateChatForThread(request.threadId, { lastStatus: "Answered Codex question." });
+    }
+    this.emitEvent("app", "questionAnswered", "Answered a Codex question.", {
+      requestId,
+      answers: normalizedAnswers,
+    });
     this.emitState();
   }
 
@@ -640,6 +656,9 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     this.pendingRequests.set(String(message.id), pending);
     this.status = pending.title;
     this.emitEvent("codex", "serverRequest", pending.title, pending);
+    if (pending.threadId) {
+      this.updateChatForThread(pending.threadId, { lastStatus: pending.title });
+    }
     this.emitState();
   }
 
@@ -668,6 +687,17 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       const statusParams = params as { threadId?: string; status?: unknown };
       if (statusParams.threadId) {
         this.threadStatusByThread.set(statusParams.threadId, describeThreadStatus(statusParams.status));
+      }
+    }
+
+    if (method === "serverRequest/resolved") {
+      const resolvedParams = params as { requestId?: string | number; threadId?: string };
+      if (resolvedParams.requestId !== undefined) {
+        const resolved = this.pendingRequests.get(String(resolvedParams.requestId));
+        this.pendingRequests.delete(String(resolvedParams.requestId));
+        if (resolved?.threadId) {
+          this.updateChatForThread(resolved.threadId, { lastStatus: "Codex request resolved." });
+        }
       }
     }
 
@@ -729,7 +759,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     });
   }
 
-  private runtimeState(activeSession: VoiceSession | null): CodexRuntimeState {
+  private runtimeState(activeSession: VoiceSession | null, sessions: VoiceSession[]): CodexRuntimeState {
     const activeChat = activeSession ? activeChatForSession(activeSession) : null;
     const activeThreadId = activeChat?.codexThreadId ?? null;
     const chatRuntimes = activeSession ? this.chatRuntimeStates(activeSession) : [];
@@ -744,7 +774,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       status: activeRuntime?.status ?? this.status,
       threadStatus: activeThreadId ? this.threadStatusByThread.get(activeThreadId) ?? null : null,
       tokenUsage: activeThreadId ? this.tokenUsageByThread.get(activeThreadId) ?? null : null,
-      pendingRequests: this.runtimePendingRequests(activeSession, chatRuntimes),
+      pendingRequests: this.runtimePendingRequests(activeSession, chatRuntimes, sessions),
       chats: chatRuntimes,
       showSessionChats: this.showSessionChatsFlag,
     };
@@ -756,7 +786,13 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       const pendingRequests = threadId
         ? [...this.pendingRequests.values()]
             .filter((request) => request.threadId === threadId)
-            .map((request) => ({ ...request, sessionId: session.id, chatId: chat.id }))
+            .map((request) => ({
+              ...request,
+              sessionId: session.id,
+              sessionName: session.displayName,
+              chatId: chat.id,
+              chatName: chat.displayName,
+            }))
         : [];
       const activeTurnId = threadId ? this.activeTurnByThread.get(threadId) ?? null : null;
       return {
@@ -779,17 +815,33 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   private runtimePendingRequests(
     activeSession: VoiceSession | null,
     chatRuntimes: CodexChatRuntime[],
+    sessions: VoiceSession[],
   ): PendingCodexRequest[] {
     const chatByThread = new Map(
       chatRuntimes
         .filter((runtime): runtime is CodexChatRuntime & { threadId: string } => Boolean(runtime.threadId))
         .map((runtime) => [runtime.threadId, runtime]),
     );
+    const storedChatByThread = new Map<string, { session: VoiceSession; chat: VoiceChat }>();
+    for (const session of sessions) {
+      for (const chat of session.chats) {
+        if (chat.codexThreadId && !chat.archivedAt) {
+          storedChatByThread.set(chat.codexThreadId, { session, chat });
+        }
+      }
+    }
     return [...this.pendingRequests.values()].map((request) => {
       if (!request.threadId) return request;
       const runtime = chatByThread.get(request.threadId);
-      if (!runtime) return request;
-      return { ...request, sessionId: activeSession?.id, chatId: runtime.chatId };
+      const stored = storedChatByThread.get(request.threadId);
+      if (!runtime && !stored) return request;
+      return {
+        ...request,
+        sessionId: stored?.session.id ?? activeSession?.id,
+        chatId: runtime?.chatId ?? stored?.chat.id,
+        sessionName: stored?.session.displayName,
+        chatName: runtime?.displayName ?? stored?.chat.displayName,
+      };
     });
   }
 
@@ -1185,109 +1237,167 @@ function describeServerRequest(message: CodexJsonMessage): PendingCodexRequest {
   const requestId = message.id ?? "";
 
   if (method === "item/commandExecution/requestApproval") {
+    const command = stringField(params.command);
+    const details = detailList([
+      detail("Command", command),
+      detail("Directory", stringField(params.cwd)),
+      detail("Reason", stringField(params.reason)),
+      detail("Approval callback", stringField(params.approvalId)),
+      detail("Network context", describeNetworkApprovalContext(params.networkApprovalContext)),
+      detail("Parsed actions", describeCommandActions(params.commandActions)),
+      detail("Proposed command rule", describeExecpolicyAmendment(params.proposedExecpolicyAmendment)),
+      detail("Proposed network rule", describeNetworkPolicyAmendments(params.proposedNetworkPolicyAmendments)),
+    ]);
     return {
+      kind: "approval",
       requestId,
       method,
       threadId: stringField(params.threadId),
       turnId: stringField(params.turnId),
       itemId: stringField(params.itemId),
       title: "Command approval needed",
-      body: [
-        stringField(params.reason),
-        stringField(params.command) ? `Command: ${stringField(params.command)}` : null,
-        stringField(params.cwd) ? `Directory: ${stringField(params.cwd)}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
+      subtitle: command ? "Shell command" : "Command execution",
+      body: requestBody(stringField(params.reason), command ? `Command: ${command}` : null, "Codex wants to run a command."),
+      details,
       options: ["accept", "acceptForSession", "decline", "cancel"],
       raw: message,
     };
   }
 
   if (method === "item/fileChange/requestApproval" || method === "applyPatchApproval") {
+    const fileChanges =
+      method === "applyPatchApproval" ? describeFileChanges(params.fileChanges) : undefined;
+    const details = detailList([
+      detail("Reason", stringField(params.reason)),
+      detail("Requested write root", stringField(params.grantRoot)),
+      detail("Files", fileChanges),
+      detail("Call", stringField(params.callId)),
+    ]);
     return {
+      kind: "approval",
       requestId,
       method,
       threadId: stringField(params.threadId) || stringField(params.conversationId),
       turnId: stringField(params.turnId),
       itemId: stringField(params.itemId),
       title: "File change approval needed",
-      body: [
+      subtitle: stringField(params.grantRoot) ? "Extra write access" : "File edit",
+      body: requestBody(
         stringField(params.reason),
-        stringField(params.grantRoot) ? `Requested write root: ${stringField(params.grantRoot)}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n") || "Codex wants to apply file changes.",
+        fileChanges ? `Files: ${fileChanges}` : null,
+        "Codex wants to apply file changes.",
+      ),
+      details,
       options: ["accept", "acceptForSession", "decline", "cancel"],
       raw: message,
     };
   }
 
   if (method === "item/tool/requestUserInput") {
-    const questions = Array.isArray(params.questions) ? params.questions : [];
+    const questions = normalizeQuestions(params.questions);
+    const questionBody = questions
+      .map((question) => describeQuestionForBody(question))
+      .filter(Boolean)
+      .join("\n\n");
     return {
+      kind: "question",
       requestId,
       method,
       threadId: stringField(params.threadId),
       turnId: stringField(params.turnId),
       itemId: stringField(params.itemId),
-      title: "Codex has a question",
-      body:
-        questions
-          .map((question) =>
-            typeof question === "object" && question && "question" in question
-              ? String((question as { question: unknown }).question)
-              : "",
-          )
-          .filter(Boolean)
-          .join("\n") || "Codex is waiting for user input.",
+      title: questions.length === 1 ? questions[0].header || "Codex has a question" : "Codex has questions",
+      subtitle: "Waiting on user input",
+      body: questionBody || "Codex is waiting for user input.",
+      details: detailList([detail("Questions", String(questions.length || 1))]),
+      questions,
       raw: message,
     };
   }
 
   if (method === "mcpServer/elicitation/request") {
+    const mode = stringField(params.mode);
+    const details = detailList([
+      detail("Server", stringField(params.serverName)),
+      detail("Mode", mode),
+      detail("URL", stringField(params.url)),
+      detail("Elicitation", stringField(params.elicitationId)),
+      detail("Schema", mode === "form" ? describeJsonValue(params.requestedSchema) : undefined),
+    ]);
     return {
+      kind: "elicitation",
       requestId,
       method,
       threadId: stringField(params.threadId),
       turnId: stringField(params.turnId),
       title: "MCP input needed",
-      body: [
-        stringField(params.serverName) ? `Server: ${stringField(params.serverName)}` : null,
-        stringField(params.message),
-        stringField(params.url) ? `URL: ${stringField(params.url)}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n") || "An MCP server is asking for input.",
+      subtitle: stringField(params.serverName) ?? undefined,
+      body: requestBody(stringField(params.message), stringField(params.url), "An MCP server is asking for input."),
+      details,
       options: ["accept", "decline", "cancel"],
       raw: message,
     };
   }
 
   if (method === "item/permissions/requestApproval") {
+    const details = detailList([
+      detail("Directory", stringField(params.cwd)),
+      detail("Reason", stringField(params.reason)),
+      detail("Permissions", describePermissionProfile(params.permissions)),
+    ]);
     return {
+      kind: "approval",
       requestId,
       method,
       threadId: stringField(params.threadId),
       turnId: stringField(params.turnId),
       itemId: stringField(params.itemId),
       title: "Permission approval needed",
+      subtitle: "Additional permissions",
       body: stringField(params.reason) || "Codex is requesting additional permissions.",
+      details,
       options: ["accept", "acceptForSession", "decline", "cancel"],
       raw: message,
     };
   }
 
   if (method === "item/tool/call") {
+    const details = detailList([
+      detail("Namespace", stringField(params.namespace)),
+      detail("Tool", stringField(params.tool)),
+      detail("Arguments", describeJsonValue(params.arguments)),
+    ]);
     return {
+      kind: "tool",
       requestId,
       method,
       threadId: stringField(params.threadId),
       turnId: stringField(params.turnId),
+      itemId: stringField(params.callId),
       title: "Unsupported tool call",
+      subtitle: stringField(params.tool),
       body: stringField(params.tool)
         ? `Codex requested dynamic tool call: ${stringField(params.tool)}`
         : "Codex requested a dynamic tool call this app cannot service yet.",
+      details,
+      options: ["cancel"],
+      raw: message,
+    };
+  }
+
+  if (method === "account/chatgptAuthTokens/refresh") {
+    return {
+      kind: "auth",
+      requestId,
+      method,
+      title: "ChatGPT auth refresh needed",
+      subtitle: "Account token refresh",
+      body:
+        "Codex app-server asked this client to refresh ChatGPT auth tokens. Codex Voice cannot refresh ChatGPT desktop auth tokens directly.",
+      details: detailList([
+        detail("Reason", stringField(params.reason)),
+        detail("Previous account", stringField(params.previousAccountId)),
+      ]),
       options: ["cancel"],
       raw: message,
     };
@@ -1295,26 +1405,185 @@ function describeServerRequest(message: CodexJsonMessage): PendingCodexRequest {
 
   if (method === "execCommandApproval") {
     const command = Array.isArray(params.command) ? params.command.join(" ") : "";
+    const details = detailList([
+      detail("Command", command),
+      detail("Directory", stringField(params.cwd)),
+      detail("Reason", stringField(params.reason)),
+      detail("Approval callback", stringField(params.approvalId)),
+      detail("Call", stringField(params.callId)),
+      detail("Parsed command", describeJsonValue(params.parsedCmd)),
+    ]);
     return {
+      kind: "approval",
       requestId,
       method,
       threadId: stringField(params.conversationId),
       title: "Command approval needed",
-      body: [stringField(params.reason), command ? `Command: ${command}` : null, stringField(params.cwd)]
-        .filter(Boolean)
-        .join("\n"),
+      subtitle: "Legacy command approval",
+      body: requestBody(stringField(params.reason), command ? `Command: ${command}` : null, "Codex wants to run a command."),
+      details,
       options: ["accept", "acceptForSession", "decline", "cancel"],
       raw: message,
     };
   }
 
   return {
+    kind: "unknown",
     requestId,
     method,
     title: "Codex needs a response",
+    subtitle: "Unsupported app-server request",
     body: method,
+    details: detailList([detail("Params", describeJsonValue(params))]),
+    options: ["cancel"],
     raw: message,
   };
+}
+
+function detail(label: string, value: string | undefined | null): PendingRequestDetail | null {
+  if (!value?.trim()) return null;
+  return { label, value: value.trim() };
+}
+
+function detailList(items: Array<PendingRequestDetail | null>): PendingRequestDetail[] {
+  return items.filter((item): item is PendingRequestDetail => item !== null);
+}
+
+function requestBody(...parts: Array<string | null | undefined>): string {
+  const fallback = parts.at(-1);
+  const body = parts
+    .slice(0, -1)
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join("\n");
+  return body || fallback || "Codex is waiting for a user response.";
+}
+
+function normalizeQuestions(value: unknown): PendingRequestQuestion[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((question, index): PendingRequestQuestion | null => {
+      if (!question || typeof question !== "object") return null;
+      const record = question as Record<string, unknown>;
+      const options = Array.isArray(record.options)
+        ? record.options
+            .map((option): PendingRequestQuestionOption | null => {
+              if (!option || typeof option !== "object") return null;
+              const optionRecord = option as Record<string, unknown>;
+              const label = stringField(optionRecord.label);
+              if (!label) return null;
+              return {
+                label,
+                description: stringField(optionRecord.description) ?? "",
+              };
+            })
+            .filter((option): option is PendingRequestQuestionOption => option !== null)
+        : null;
+      return {
+        id: stringField(record.id) ?? `question-${index + 1}`,
+        header: stringField(record.header) ?? `Question ${index + 1}`,
+        question: stringField(record.question) ?? "Codex is asking for input.",
+        isOther: Boolean(record.isOther),
+        isSecret: Boolean(record.isSecret),
+        options,
+      };
+    })
+    .filter((question): question is PendingRequestQuestion => question !== null);
+}
+
+function describeQuestionForBody(question: PendingRequestQuestion): string {
+  const options = question.options?.length
+    ? `Options: ${question.options.map((option) => option.label).join(", ")}`
+    : null;
+  return [question.header, question.question, options].filter(Boolean).join("\n");
+}
+
+function describeCommandActions(value: unknown): string | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value
+    .map((action) => {
+      if (!action || typeof action !== "object") return null;
+      const record = action as Record<string, unknown>;
+      const type = stringField(record.type) ?? "unknown";
+      if (type === "read") {
+        return `Read ${stringField(record.name) ?? "file"} at ${stringField(record.path) ?? "unknown path"}`;
+      }
+      if (type === "listFiles") {
+        return `List files${stringField(record.path) ? ` in ${stringField(record.path)}` : ""}`;
+      }
+      if (type === "search") {
+        return `Search${stringField(record.query) ? ` for ${stringField(record.query)}` : ""}${
+          stringField(record.path) ? ` in ${stringField(record.path)}` : ""
+        }`;
+      }
+      return stringField(record.command) ?? type;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
+function describeNetworkApprovalContext(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const host = stringField(record.host);
+  const protocol = stringField(record.protocol);
+  if (!host && !protocol) return undefined;
+  return [protocol, host].filter(Boolean).join(" ");
+}
+
+function describeExecpolicyAmendment(value: unknown): string | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value.map((entry) => String(entry)).join(" ");
+}
+
+function describeNetworkPolicyAmendments(value: unknown): string | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value
+    .map((amendment) => {
+      if (!amendment || typeof amendment !== "object") return null;
+      const record = amendment as Record<string, unknown>;
+      const action = stringField(record.action) ?? "allow";
+      const host = stringField(record.host) ?? "unknown host";
+      return `${action} ${host}`;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
+function describePermissionProfile(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const parts: string[] = [];
+  const network = record.network as Record<string, unknown> | null | undefined;
+  if (network && typeof network === "object") {
+    parts.push(`network ${network.enabled === false ? "disabled" : "enabled"}`);
+  }
+  const fileSystem = record.fileSystem as Record<string, unknown> | null | undefined;
+  if (fileSystem && typeof fileSystem === "object") {
+    const read = Array.isArray(fileSystem.read) ? fileSystem.read.map(String).join(", ") : "";
+    const write = Array.isArray(fileSystem.write) ? fileSystem.write.map(String).join(", ") : "";
+    const entries = Array.isArray(fileSystem.entries) ? `${fileSystem.entries.length} entries` : "";
+    if (read) parts.push(`read: ${read}`);
+    if (write) parts.push(`write: ${write}`);
+    if (entries) parts.push(entries);
+  }
+  return parts.join("; ") || describeJsonValue(value);
+}
+
+function describeFileChanges(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const names = Object.keys(value as Record<string, unknown>);
+  if (names.length === 0) return undefined;
+  return names.length <= 5 ? names.join(", ") : `${names.slice(0, 5).join(", ")} and ${names.length - 5} more`;
+}
+
+function describeJsonValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 type ServerRequestResponse =
@@ -1365,7 +1634,47 @@ function responseForDecision(request: PendingCodexRequest, decision: ApprovalDec
       },
     };
   }
+  if (method === "account/chatgptAuthTokens/refresh") {
+    return {
+      kind: "error",
+      message:
+        "Codex Voice cannot refresh ChatGPT auth tokens directly. Re-authenticate Codex from the desktop app or CLI, then retry.",
+    };
+  }
   return { kind: "error", message: `Unsupported Codex server request method: ${method}` };
+}
+
+function normalizeToolQuestionAnswers(
+  request: PendingCodexRequest,
+  answers: ToolQuestionAnswer[],
+): ToolQuestionAnswer[] {
+  const byQuestionId = new Map(
+    answers.map((answer) => [
+      answer.questionId,
+      answer.answers.map((value) => value.trim()).filter(Boolean),
+    ]),
+  );
+  const expectedQuestions = request.questions ?? [];
+  if (expectedQuestions.length === 0) {
+    const normalized = answers
+      .map((answer) => ({
+        questionId: answer.questionId,
+        answers: answer.answers.map((value) => value.trim()).filter(Boolean),
+      }))
+      .filter((answer) => answer.answers.length > 0);
+    if (normalized.length === 0) {
+      throw new Error("Answer is required before resolving Codex's question.");
+    }
+    return normalized;
+  }
+
+  return expectedQuestions.map((question) => {
+    const values = byQuestionId.get(question.id) ?? [];
+    if (values.length === 0) {
+      throw new Error(`Answer is required for "${question.header || question.question}".`);
+    }
+    return { questionId: question.id, answers: values };
+  });
 }
 
 function permissionGrantFromRequest(request: PendingCodexRequest): Record<string, unknown> {
@@ -1722,6 +2031,7 @@ function codexTurnText(userText: string): string {
     "Treat the current working directory as this voice session's workspace.",
     "Codex owns the actual planning, computer use, tool use, browser use, and execution.",
     "For requests that may require controlling desktop apps, the model should use tool_search to discover computer-use before choosing an approach; do this only once per new tool or plugin requested by the user.",
+    "If the user's request mentions the Computer Use plugin, Codex must satisfy that request by discovering and using the actual computer-use plugin. Do not replace it with shell commands, open -a, AppleScript via terminal, or other terminal workarounds.",
     "Ask for clarification or approval when needed, and keep final status concise enough to relay by voice.",
     "",
     "User's spoken request:",

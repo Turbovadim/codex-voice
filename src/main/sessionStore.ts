@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   DEFAULT_CODEX_MODEL,
@@ -26,18 +26,34 @@ const SESSION_FILE = ".codex-voice-session.json";
 export class SessionStore {
   readonly baseFolder: string;
   private readonly indexPath: string;
+  private readonly lockPath: string;
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(baseFolder = path.join(app.getPath("documents"), "Codex Voice Sessions")) {
     this.baseFolder = baseFolder;
     this.indexPath = path.join(baseFolder, INDEX_FILE);
+    this.lockPath = `${this.indexPath}.lock`;
   }
 
   async ensureReady(): Promise<void> {
     await mkdir(this.baseFolder, { recursive: true });
-    if (!existsSync(this.indexPath)) {
-      await this.writeIndex({ version: 1, sessions: [] });
-      await this.importExistingFolders();
-    }
+    await this.enqueueMutation(async () => {
+      if (!existsSync(this.indexPath)) {
+        await this.writeIndex({ version: 1, sessions: await this.readSessionsFromFolders() });
+        return;
+      }
+      const index = await this.readIndexFile();
+      if (!index) {
+        await this.writeIndex({ version: 1, sessions: await this.readSessionsFromFolders() });
+        return;
+      }
+      if (index.sessions.length === 0) {
+        const sessions = await this.readSessionsFromFolders();
+        if (sessions.length > 0) {
+          await this.writeIndex({ version: 1, sessions });
+        }
+      }
+    });
   }
 
   async listSessions(options: ListSessionsOptions = {}): Promise<VoiceSession[]> {
@@ -92,16 +108,18 @@ export class SessionStore {
   }
 
   async upsertSession(session: VoiceSession): Promise<VoiceSession> {
-    await mkdir(session.folderPath, { recursive: true });
-    const index = await this.readIndex();
-    const nextSession = { ...session, updatedAt: new Date().toISOString() };
-    const nextSessions = [
-      nextSession,
-      ...index.sessions.filter((existing) => existing.id !== session.id),
-    ];
-    await this.writeIndex({ version: 1, sessions: nextSessions });
-    await writeFile(path.join(session.folderPath, SESSION_FILE), JSON.stringify(nextSession, null, 2));
-    return nextSession;
+    return this.enqueueMutation(async () => {
+      await mkdir(session.folderPath, { recursive: true });
+      const index = await this.readIndex();
+      const nextSession = { ...session, updatedAt: new Date().toISOString() };
+      const nextSessions = [
+        nextSession,
+        ...index.sessions.filter((existing) => existing.id !== session.id),
+      ];
+      await this.writeJsonAtomic(path.join(session.folderPath, SESSION_FILE), nextSession);
+      await this.writeIndex({ version: 1, sessions: nextSessions });
+      return nextSession;
+    });
   }
 
   async updateSession(id: string, patch: Partial<VoiceSession>): Promise<VoiceSession> {
@@ -283,6 +301,12 @@ export class SessionStore {
 
   private async readIndex(): Promise<SessionIndex> {
     await mkdir(this.baseFolder, { recursive: true });
+    const index = await this.readIndexFile();
+    if (index) return index;
+    return { version: 1, sessions: await this.readSessionsFromFolders() };
+  }
+
+  private async readIndexFile(): Promise<SessionIndex | null> {
     try {
       const raw = await readFile(this.indexPath, "utf8");
       const parsed = JSON.parse(raw) as SessionIndex;
@@ -291,16 +315,16 @@ export class SessionStore {
         sessions: Array.isArray(parsed.sessions) ? parsed.sessions.map(normalizeSession) : [],
       };
     } catch {
-      return { version: 1, sessions: [] };
+      return null;
     }
   }
 
   private async writeIndex(index: SessionIndex): Promise<void> {
     await mkdir(this.baseFolder, { recursive: true });
-    await writeFile(this.indexPath, JSON.stringify(index, null, 2));
+    await this.writeJsonAtomic(this.indexPath, index);
   }
 
-  private async importExistingFolders(): Promise<void> {
+  private async readSessionsFromFolders(): Promise<VoiceSession[]> {
     const entries = await readdir(this.baseFolder, { withFileTypes: true });
     const sessions: VoiceSession[] = [];
     for (const entry of entries) {
@@ -314,8 +338,70 @@ export class SessionStore {
         // Ignore malformed sidecar files; the debug UI should remain bootable.
       }
     }
-    if (sessions.length > 0) {
-      await this.writeIndex({ version: 1, sessions });
+    return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  private async writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}-${randomUUID()}.tmp`;
+    try {
+      await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`);
+      await rename(tempPath, filePath);
+    } catch (error) {
+      try {
+        await unlink(tempPath);
+      } catch {
+        // Best-effort cleanup; preserve the original error.
+      }
+      throw error;
+    }
+  }
+
+  private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.mutationQueue.then(
+      () => this.withMutationLock(operation),
+      () => this.withMutationLock(operation),
+    );
+    this.mutationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    const release = await this.acquireMutationLock();
+    try {
+      return await operation();
+    } finally {
+      await release();
+    }
+  }
+
+  private async acquireMutationLock(): Promise<() => Promise<void>> {
+    const staleAfterMs = 30_000;
+    while (true) {
+      try {
+        await mkdir(this.lockPath);
+        return async () => {
+          try {
+            await rmdir(this.lockPath);
+          } catch {
+            // A stale-lock cleanup race should not hide the successful write.
+          }
+        };
+      } catch (error) {
+        if (!isErrorWithCode(error, "EEXIST")) throw error;
+        try {
+          const lock = await stat(this.lockPath);
+          if (Date.now() - lock.mtimeMs > staleAfterMs) {
+            await rmdir(this.lockPath);
+            continue;
+          }
+        } catch (lockError) {
+          if (!isErrorWithCode(lockError, "ENOENT")) throw lockError;
+        }
+        await delay(25);
+      }
     }
   }
 }
@@ -409,6 +495,14 @@ function reasoningEffortOrNull(value: unknown): ReasoningEffort | null {
 
 function stringOrNow(value: unknown, fallback = new Date().toISOString()): string {
   return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function isErrorWithCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && (error as { code?: unknown }).code === code;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function sanitizeSessionName(name: string): string {

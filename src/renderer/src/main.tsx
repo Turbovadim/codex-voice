@@ -8,6 +8,7 @@ import {
   type CodexModelSummary,
   type CodexThreadTokenUsage,
   type PendingCodexRequest,
+  type PendingRequestQuestion,
   type ReasoningEffort,
   type ToolQuestionAnswer,
   type VoiceChat,
@@ -311,6 +312,8 @@ function VoiceHome({
     state.codexSettings.defaultReasoningEffort ??
     DEFAULT_CODEX_REASONING_EFFORT;
   const modelOptions = modelsForValue(state.codexSettings.models, effectiveModel);
+  const pendingRequests = state.runtime.pendingRequests;
+  const primaryPendingRequest = pendingRequests[0] ?? null;
   const filteredSessions = state.sessions.filter((session) => {
     const haystack = [
       session.displayName,
@@ -596,6 +599,14 @@ function VoiceHome({
           </section>
 
           {error && <ErrorOverlay message={error} onDismiss={onDismissError} />}
+
+          {primaryPendingRequest && (
+            <VoicePendingRequestPanel
+              request={primaryPendingRequest}
+              requestCount={pendingRequests.length}
+              onAction={onAction}
+            />
+          )}
 
           <section className="voice-session-region" aria-label="Sessions">
             <FeaturedSessionCard
@@ -1367,8 +1378,9 @@ function voiceStateLabel(
   voiceConnected: boolean,
   voiceConnecting: boolean,
   voicePaused: boolean,
-): { label: string; tone: "off" | "listening" | "working" | "connecting" | "paused" } {
+): { label: string; tone: "off" | "listening" | "working" | "connecting" | "paused" | "waiting" } {
   if (voiceConnecting) return { label: "Connecting", tone: "connecting" };
+  if (state.runtime.pendingRequests.length > 0) return { label: "Needs input", tone: "waiting" };
   if (voiceConnected && voicePaused && state.runtime.activeTurnId) {
     return { label: "Working, voice paused", tone: "paused" };
   }
@@ -1385,6 +1397,7 @@ function voiceOrbAriaLabel(
   voicePaused: boolean,
 ): string {
   if (voiceConnecting) return "Voice connecting";
+  if (state.runtime.pendingRequests.length > 0) return "Respond to pending Codex request";
   if (voiceConnected && voicePaused && state.runtime.activeTurnId) {
     return "Resume voice while Codex keeps working";
   }
@@ -1745,6 +1758,35 @@ function StatusPill({ label, tone }: { label: string; tone: "good" | "warn" | "m
   return <span className={`status-pill ${tone}`}>{label}</span>;
 }
 
+function VoicePendingRequestPanel({
+  request,
+  requestCount,
+  onAction,
+}: {
+  request: PendingCodexRequest;
+  requestCount: number;
+  onAction: (action: () => Promise<unknown>) => Promise<void>;
+}): React.ReactElement {
+  return (
+    <section className={`voice-pending-panel ${request.kind}`} aria-label="Pending Codex request">
+      <div className="voice-pending-topline">
+        <span>{requestKindLabel(request)}</span>
+        {requestCount > 1 && <strong>{requestCount} waiting</strong>}
+      </div>
+      <h2>{request.title}</h2>
+      {requestContextLabel(request) && <p>{requestContextLabel(request)}</p>}
+      {request.kind === "question" ? (
+        <ToolQuestionForm request={request} onAction={onAction} surface="voice" />
+      ) : (
+        <>
+          <RequestDetails request={request} surface="voice" />
+          <ApprovalActions request={request} onAction={onAction} surface="voice" />
+        </>
+      )}
+    </section>
+  );
+}
+
 function PendingRequestCard({
   request,
   onAction,
@@ -1757,24 +1799,87 @@ function PendingRequestCard({
   }
 
   return (
-    <article className="pending-card">
-      <h3>{request.title}</h3>
-      <pre>{request.body || request.method}</pre>
-      <div className="button-row wrap">
+    <article className={`pending-card ${request.kind}`}>
+      <PendingRequestHeader request={request} />
+      <RequestDetails request={request} surface="debug" />
+      <ApprovalActions request={request} onAction={onAction} surface="debug" />
+    </article>
+  );
+}
+
+function PendingRequestHeader({ request }: { request: PendingCodexRequest }): React.ReactElement {
+  return (
+    <div className="pending-card-header">
+      <div>
+        <span className="pending-kind">{requestKindLabel(request)}</span>
+        <h3>{request.title}</h3>
+        {(request.subtitle || requestContextLabel(request)) && (
+          <p>{[request.subtitle, requestContextLabel(request)].filter(Boolean).join(" - ")}</p>
+        )}
+      </div>
+      <code>#{String(request.requestId)}</code>
+    </div>
+  );
+}
+
+function RequestDetails({
+  request,
+  surface,
+}: {
+  request: PendingCodexRequest;
+  surface: "debug" | "voice";
+}): React.ReactElement {
+  const details = request.details ?? [];
+  return (
+    <div className={`request-details ${surface}`}>
+      {request.body && <pre>{request.body}</pre>}
+      {details.length > 0 && (
+        <dl>
+          {details.map((detail) => (
+            <React.Fragment key={`${detail.label}-${detail.value}`}>
+              <dt>{detail.label}</dt>
+              <dd>{detail.value}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+}
+
+function ApprovalActions({
+  request,
+  onAction,
+  surface,
+}: {
+  request: PendingCodexRequest;
+  onAction: (action: () => Promise<unknown>) => Promise<void>;
+  surface: "debug" | "voice";
+}): React.ReactElement {
+  const options = request.options ?? ["cancel"];
+  return (
+    <div className={`button-row wrap approval-actions ${surface}`}>
+      {options.includes("accept") && (
         <button className="primary" onClick={() => void onAction(() => window.codexVoice.answerApproval(request.requestId, "accept"))}>
           Accept
         </button>
+      )}
+      {options.includes("acceptForSession") && (
         <button onClick={() => void onAction(() => window.codexVoice.answerApproval(request.requestId, "acceptForSession"))}>
           Accept Session
         </button>
+      )}
+      {options.includes("decline") && (
         <button onClick={() => void onAction(() => window.codexVoice.answerApproval(request.requestId, "decline"))}>
           Decline
         </button>
+      )}
+      {options.includes("cancel") && (
         <button className="danger" onClick={() => void onAction(() => window.codexVoice.answerApproval(request.requestId, "cancel"))}>
           Cancel
         </button>
-      </div>
-    </article>
+      )}
+    </div>
   );
 }
 
@@ -1785,49 +1890,141 @@ function ToolQuestionCard({
   request: PendingCodexRequest;
   onAction: (action: () => Promise<unknown>) => Promise<void>;
 }): React.ReactElement {
+  return (
+    <article className="pending-card question">
+      <PendingRequestHeader request={request} />
+      <ToolQuestionForm request={request} onAction={onAction} surface="debug" />
+    </article>
+  );
+}
+
+function ToolQuestionForm({
+  request,
+  onAction,
+  surface,
+}: {
+  request: PendingCodexRequest;
+  onAction: (action: () => Promise<unknown>) => Promise<void>;
+  surface: "debug" | "voice";
+}): React.ReactElement {
   const questions = useMemo(() => {
-    const raw = request.raw as { params?: { questions?: Array<any> } };
-    return raw.params?.questions ?? [];
-  }, [request.raw]);
+    return request.questions?.length ? request.questions : questionsFromRawRequest(request);
+  }, [request]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setAnswers({});
+  }, [request.requestId]);
 
   const payload: ToolQuestionAnswer[] = questions.map((question) => ({
     questionId: question.id,
-    answers: [answers[question.id] || question.options?.[0]?.label || ""].filter(Boolean),
+    answers: [answers[question.id] || defaultQuestionAnswer(question)].filter(Boolean),
   }));
+  const canSubmit = questions.length > 0 && payload.every((answer) => answer.answers.length > 0);
 
   return (
-    <article className="pending-card">
-      <h3>{request.title}</h3>
+    <div className={`tool-question-form ${surface}`}>
+      {request.body && questions.length === 0 && <p className="question-body">{request.body}</p>}
       {questions.map((question) => (
-        <label key={question.id} className="stacked-input compact">
-          {question.question}
-          {Array.isArray(question.options) && question.options.length > 0 ? (
-            <select
-              value={answers[question.id] ?? question.options[0].label}
-              onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
-            >
-              {question.options.map((option: { label: string; description: string }) => (
-                <option key={option.label} value={option.label}>
-                  {option.label} - {option.description}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              value={answers[question.id] ?? ""}
-              onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
-              placeholder="Answer"
-              type={question.isSecret ? "password" : "text"}
-            />
-          )}
-        </label>
+        <div key={question.id} className="question-block">
+          <span>{question.header}</span>
+          <label className="stacked-input compact">
+            {question.question}
+            {question.options?.length ? (
+              <div className="question-options">
+                {question.options.map((option) => (
+                  <button
+                    key={option.label}
+                    type="button"
+                    className={(answers[question.id] ?? defaultQuestionAnswer(question)) === option.label ? "selected" : ""}
+                    onClick={() => setAnswers((current) => ({ ...current, [question.id]: option.label }))}
+                  >
+                    <strong>{option.label}</strong>
+                    {option.description && <small>{option.description}</small>}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {question.options?.length && !question.isOther ? null : (
+              <input
+                value={customQuestionAnswer(question, answers[question.id])}
+                onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+                placeholder={question.options?.length ? "Other answer" : "Answer"}
+                type={question.isSecret ? "password" : "text"}
+                aria-label={`${question.header}: ${question.question}`}
+              />
+            )}
+          </label>
+        </div>
       ))}
-      <button className="primary" onClick={() => void onAction(() => window.codexVoice.answerToolQuestion(request.requestId, payload))}>
+      {questions.length === 0 && <p className="empty">Question details were not included in the app-server payload.</p>}
+      <button
+        className="primary"
+        disabled={!canSubmit}
+        onClick={() => void onAction(() => window.codexVoice.answerToolQuestion(request.requestId, payload))}
+      >
         Send Answer
       </button>
-    </article>
+    </div>
   );
+}
+
+function questionsFromRawRequest(request: PendingCodexRequest): PendingRequestQuestion[] {
+  const raw = request.raw as { params?: { questions?: Array<any> }; raw?: { params?: { questions?: Array<any> } } };
+  const questions = raw.params?.questions ?? raw.raw?.params?.questions ?? [];
+  if (!Array.isArray(questions)) return [];
+  return questions
+    .map((question, index): PendingRequestQuestion | null => {
+      if (!question || typeof question !== "object") return null;
+      const record = question as Record<string, unknown>;
+      const id = typeof record.id === "string" && record.id.trim() ? record.id : `question-${index + 1}`;
+      const options = Array.isArray(record.options)
+        ? record.options
+            .map((option) => {
+              if (!option || typeof option !== "object") return null;
+              const optionRecord = option as Record<string, unknown>;
+              return typeof optionRecord.label === "string"
+                ? {
+                    label: optionRecord.label,
+                    description: typeof optionRecord.description === "string" ? optionRecord.description : "",
+                  }
+                : null;
+            })
+            .filter((option): option is { label: string; description: string } => option !== null)
+        : null;
+      return {
+        id,
+        header: typeof record.header === "string" ? record.header : `Question ${index + 1}`,
+        question: typeof record.question === "string" ? record.question : "Codex is asking for input.",
+        isOther: Boolean(record.isOther),
+        isSecret: Boolean(record.isSecret),
+        options,
+      };
+    })
+    .filter((question): question is PendingRequestQuestion => question !== null);
+}
+
+function defaultQuestionAnswer(question: PendingRequestQuestion): string {
+  return question.options?.[0]?.label ?? "";
+}
+
+function customQuestionAnswer(question: PendingRequestQuestion, answer: string | undefined): string {
+  if (!answer) return "";
+  if (!question.options?.some((option) => option.label === answer)) return answer;
+  return "";
+}
+
+function requestKindLabel(request: PendingCodexRequest): string {
+  if (request.kind === "question") return "Question";
+  if (request.kind === "approval") return "Approval";
+  if (request.kind === "elicitation") return "MCP request";
+  if (request.kind === "tool") return "Tool call";
+  if (request.kind === "auth") return "Auth";
+  return "Request";
+}
+
+function requestContextLabel(request: PendingCodexRequest): string {
+  return [request.sessionName, request.chatName].filter(Boolean).join(" / ");
 }
 
 createRoot(document.getElementById("root")!).render(

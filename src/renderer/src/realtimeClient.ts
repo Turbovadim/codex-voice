@@ -138,21 +138,20 @@ export class RealtimeVoiceClient {
 
   speakPendingRequest(request: PendingCodexRequest): void {
     if (!this.connected || this.paused) return;
-    const isQuestion = request.method === "item/tool/requestUserInput";
+    const isQuestion = request.kind === "question";
     const instructions = isQuestion
       ? [
           "Codex is asking the user a question.",
           "Briefly ask it in natural spoken English.",
           "Tell the user they can answer out loud.",
-          `Question details: ${JSON.stringify(request.body || request.title)}`,
+          `Question details: ${JSON.stringify(summarizePendingRequestForSpeech(request))}`,
         ].join("\n")
       : [
           "Codex is waiting for user approval.",
           "Ask for permission in natural spoken English.",
           "Mention the concrete command, file change, or tool details if present.",
           "Tell the user they can say allow, allow for this session, decline, or cancel.",
-          `Approval title: ${JSON.stringify(request.title)}`,
-          `Approval details: ${JSON.stringify(request.body || request.method)}`,
+          `Approval details: ${JSON.stringify(summarizePendingRequestForSpeech(request))}`,
         ].join("\n");
     this.send({
       type: "response.create",
@@ -286,7 +285,7 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
     const request = findPendingRequest(
       state.runtime.pendingRequests,
       optionalString(args.requestId),
-      (candidate) => candidate.method !== "item/tool/requestUserInput",
+      canAnswerWithApprovalDecision,
       "approval",
     );
     const decision = approvalDecisionArg(args.decision);
@@ -304,7 +303,7 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
     const request = findPendingRequest(
       state.runtime.pendingRequests,
       optionalString(args.requestId),
-      (candidate) => candidate.method === "item/tool/requestUserInput",
+      (candidate) => candidate.kind === "question",
       "question",
     );
     const answers = answersForQuestionRequest(request, optionalString(args.questionId), answer);
@@ -505,13 +504,17 @@ function findPendingRequest(
   throw new Error(`There is more than one pending Codex ${label}; ask which one to answer.`);
 }
 
+function canAnswerWithApprovalDecision(request: PendingCodexRequest): boolean {
+  return request.kind === "approval" || request.kind === "elicitation" || request.kind === "tool" || request.kind === "auth";
+}
+
 function answersForQuestionRequest(
   request: PendingCodexRequest,
   questionId: string | undefined,
   answer: string,
 ): ToolQuestionAnswer[] {
   const raw = request.raw as { raw?: { params?: { questions?: Array<any> } }; params?: { questions?: Array<any> } };
-  const questions = raw.params?.questions ?? raw.raw?.params?.questions ?? [];
+  const questions = request.questions ?? raw.params?.questions ?? raw.raw?.params?.questions ?? [];
   if (questions.length === 0) {
     if (!questionId) throw new Error("Codex question payload did not include question ids.");
     return [{ questionId, answers: [answer] }];
@@ -520,15 +523,27 @@ function answersForQuestionRequest(
     throw new Error(`No pending Codex question matched question id ${questionId}.`);
   }
   if (questionId) {
-    return [{ questionId, answers: [answer] }];
+    const question = questions.find((candidate) => candidate.id === questionId);
+    return [{ questionId, answers: [answerForQuestion(question, answer)] }];
   }
   if (!questionId && questions.length > 1) {
     throw new Error("There is more than one Codex question; ask which one to answer.");
   }
   return questions.map((question) => ({
     questionId: question.id,
-    answers: [answer],
+    answers: [answerForQuestion(question, answer)],
   }));
+}
+
+function answerForQuestion(
+  question: { options?: Array<{ label: string }> | null } | undefined,
+  answer: string,
+): string {
+  const spoken = answer.trim();
+  const options = question?.options ?? [];
+  const exact = options.find((option) => option.label.toLowerCase() === spoken.toLowerCase());
+  if (exact) return exact.label;
+  return spoken;
 }
 
 function approvalDecisionMessage(decision: ApprovalDecision): string {
@@ -542,7 +557,27 @@ function summarizePendingRequest(request: PendingCodexRequest): Record<string, u
   return {
     requestId: request.requestId,
     method: request.method,
+    kind: request.kind,
     title: request.title,
+    subtitle: request.subtitle,
     body: request.body,
+    chat: request.chatName,
+    details: request.details,
+    questions: request.questions,
+  };
+}
+
+function summarizePendingRequestForSpeech(request: PendingCodexRequest): Record<string, unknown> {
+  return {
+    title: request.title,
+    subtitle: request.subtitle,
+    chat: request.chatName,
+    body: request.body,
+    details: request.details,
+    questions: request.questions?.map((question) => ({
+      header: question.header,
+      question: question.question,
+      options: question.options?.map((option) => option.label),
+    })),
   };
 }

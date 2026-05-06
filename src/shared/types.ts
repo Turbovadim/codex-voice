@@ -104,16 +104,49 @@ export type CodexThreadTokenUsage = {
   modelContextWindow: number | null;
 };
 
+export type PendingRequestKind =
+  | "approval"
+  | "question"
+  | "elicitation"
+  | "tool"
+  | "auth"
+  | "unknown";
+
+export type PendingRequestDetail = {
+  label: string;
+  value: string;
+};
+
+export type PendingRequestQuestionOption = {
+  label: string;
+  description: string;
+};
+
+export type PendingRequestQuestion = {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: PendingRequestQuestionOption[] | null;
+};
+
 export type PendingCodexRequest = {
+  kind: PendingRequestKind;
   requestId: number | string;
   method: string;
   sessionId?: string;
   chatId?: string;
+  sessionName?: string;
+  chatName?: string;
   threadId?: string;
   turnId?: string;
   itemId?: string;
   title: string;
+  subtitle?: string;
   body: string;
+  details?: PendingRequestDetail[];
+  questions?: PendingRequestQuestion[];
   options?: string[];
   raw: unknown;
 };
