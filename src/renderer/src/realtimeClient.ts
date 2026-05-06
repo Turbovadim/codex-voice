@@ -25,11 +25,16 @@ export class RealtimeVoiceClient {
   private dc: RTCDataChannel | null = null;
   private localStream: MediaStream | null = null;
   private audioEl: HTMLAudioElement | null = null;
+  private isPaused = false;
 
   constructor(private readonly callbacks: RealtimeCallbacks) {}
 
   get connected(): boolean {
     return this.dc?.readyState === "open";
+  }
+
+  get paused(): boolean {
+    return this.isPaused;
   }
 
   async connect(): Promise<void> {
@@ -54,6 +59,7 @@ export class RealtimeVoiceClient {
       const dc = pc.createDataChannel("oai-events");
       this.dc = dc;
       dc.addEventListener("open", () => {
+        this.setPaused(false);
         this.callbacks.onConnectionChange(true, `Connected to ${secret.model} (${secret.voice}).`);
         this.log("connection", "Realtime data channel opened.");
       });
@@ -98,11 +104,26 @@ export class RealtimeVoiceClient {
     this.dc = null;
     this.localStream = null;
     this.audioEl = null;
+    this.isPaused = false;
     this.callbacks.onConnectionChange(false, "Realtime disconnected.");
   }
 
+  setPaused(paused: boolean): void {
+    const changed = this.isPaused !== paused;
+    this.isPaused = paused;
+    this.localStream?.getAudioTracks().forEach((track) => {
+      track.enabled = !paused;
+    });
+    if (this.audioEl) {
+      this.audioEl.muted = paused;
+    }
+    if (changed) {
+      this.log(paused ? "voicePaused" : "voiceResumed", paused ? "Realtime voice paused." : "Realtime voice resumed.");
+    }
+  }
+
   speakStatus(message: string): void {
-    if (!this.connected || !message.trim()) return;
+    if (!this.connected || this.paused || !message.trim()) return;
     this.send({
       type: "response.create",
       response: {
@@ -116,7 +137,7 @@ export class RealtimeVoiceClient {
   }
 
   speakPendingRequest(request: PendingCodexRequest): void {
-    if (!this.connected) return;
+    if (!this.connected || this.paused) return;
     const isQuestion = request.method === "item/tool/requestUserInput";
     const instructions = isQuestion
       ? [

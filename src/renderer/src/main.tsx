@@ -97,6 +97,7 @@ function App(): React.ReactElement {
   const [voiceStatus, setVoiceStatus] = useState("Realtime disconnected.");
   const [voiceConnected, setVoiceConnected] = useState(false);
   const [voiceConnecting, setVoiceConnecting] = useState(false);
+  const [voicePaused, setVoicePaused] = useState(false);
   const voiceRef = useRef<RealtimeVoiceClient | null>(null);
 
   useEffect(() => {
@@ -158,6 +159,7 @@ function App(): React.ReactElement {
       voiceRef.current = null;
       setVoiceConnected(false);
       setVoiceConnecting(false);
+      setVoicePaused(false);
       setVoiceStatus("Realtime disconnected.");
       return;
     }
@@ -168,6 +170,9 @@ function App(): React.ReactElement {
         onConnectionChange: (connected, label) => {
           setVoiceConnected(connected);
           setVoiceConnecting(!connected && label !== "Realtime data channel closed.");
+          if (connected || label === "Realtime data channel closed." || label === "Realtime disconnected.") {
+            setVoicePaused(false);
+          }
           setVoiceStatus(label);
         },
         onLog: (event) => {
@@ -179,6 +184,7 @@ function App(): React.ReactElement {
         await client.connect();
       } catch (caught) {
         if (voiceRef.current === client) voiceRef.current = null;
+        setVoicePaused(false);
         throw caught;
       } finally {
         setVoiceConnecting(false);
@@ -187,8 +193,17 @@ function App(): React.ReactElement {
   }
 
   async function handleOrbAction(): Promise<void> {
-    if (state.runtime.activeTurnId) {
-      await runAction(() => window.codexVoice.interruptCodex());
+    const client = voiceRef.current;
+    if (client?.connected) {
+      const nextPaused = !client.paused;
+      client.setPaused(nextPaused);
+      setVoicePaused(nextPaused);
+      setVoiceStatus(nextPaused ? "Realtime voice paused." : "Realtime voice resumed.");
+      return;
+    }
+    if (voiceConnected) {
+      setVoiceConnected(false);
+      setVoicePaused(false);
       return;
     }
     await toggleVoice();
@@ -225,6 +240,7 @@ function App(): React.ReactElement {
       error={error}
       voiceConnected={voiceConnected}
       voiceConnecting={voiceConnecting}
+      voicePaused={voicePaused}
       onAction={runAction}
       onDismissError={() => setError(null)}
       onOrbAction={handleOrbAction}
@@ -240,6 +256,7 @@ function VoiceHome({
   error,
   voiceConnected,
   voiceConnecting,
+  voicePaused,
   onAction,
   onDismissError,
   onOrbAction,
@@ -251,6 +268,7 @@ function VoiceHome({
   error: string | null;
   voiceConnected: boolean;
   voiceConnecting: boolean;
+  voicePaused: boolean;
   onAction: (action: () => Promise<unknown>) => Promise<void>;
   onDismissError: () => void;
   onOrbAction: () => Promise<void>;
@@ -304,7 +322,8 @@ function VoiceHome({
       .toLowerCase();
     return haystack.includes(query.trim().toLowerCase());
   });
-  const voiceState = voiceStateLabel(state, voiceConnected, voiceConnecting);
+  const voiceState = voiceStateLabel(state, voiceConnected, voiceConnecting, voicePaused);
+  const voiceOrbLabel = voiceOrbAriaLabel(state, voiceConnected, voiceConnecting, voicePaused);
 
   useEffect(() => {
     setChatsOpen(false);
@@ -565,7 +584,7 @@ function VoiceHome({
           <section className="voice-hero" aria-label="Voice status">
             <button
               className={`voice-orb ${voiceState.tone}`}
-              aria-label={state.runtime.activeTurnId ? "Interrupt Codex" : "Start voice"}
+              aria-label={voiceOrbLabel}
               onClick={() => void onOrbAction()}
             >
               <span className="voice-orb-shine" />
@@ -1347,11 +1366,32 @@ function voiceStateLabel(
   state: AppState,
   voiceConnected: boolean,
   voiceConnecting: boolean,
-): { label: string; tone: "off" | "listening" | "working" | "connecting" } {
-  if (state.runtime.activeTurnId) return { label: "Working", tone: "working" };
+  voicePaused: boolean,
+): { label: string; tone: "off" | "listening" | "working" | "connecting" | "paused" } {
   if (voiceConnecting) return { label: "Connecting", tone: "connecting" };
+  if (voiceConnected && voicePaused && state.runtime.activeTurnId) {
+    return { label: "Working, voice paused", tone: "paused" };
+  }
+  if (voiceConnected && voicePaused) return { label: "Voice paused", tone: "paused" };
+  if (state.runtime.activeTurnId) return { label: "Working", tone: "working" };
   if (voiceConnected) return { label: "Listening", tone: "listening" };
   return { label: "Voice off", tone: "off" };
+}
+
+function voiceOrbAriaLabel(
+  state: AppState,
+  voiceConnected: boolean,
+  voiceConnecting: boolean,
+  voicePaused: boolean,
+): string {
+  if (voiceConnecting) return "Voice connecting";
+  if (voiceConnected && voicePaused && state.runtime.activeTurnId) {
+    return "Resume voice while Codex keeps working";
+  }
+  if (voiceConnected && voicePaused) return "Resume voice";
+  if (voiceConnected && state.runtime.activeTurnId) return "Pause voice while Codex keeps working";
+  if (voiceConnected) return "Pause voice";
+  return "Start voice";
 }
 
 function chatSummariesForSession(session: VoiceSession | null, state: AppState): ChatSummary[] {

@@ -488,6 +488,25 @@ code {
     0 0 44px rgba(210, 214, 220, 0.13);
 }
 
+.voice-orb.paused {
+  filter: saturate(0.62) brightness(0.82);
+  box-shadow:
+    inset 0 2px 11px rgba(255, 255, 255, 0.72),
+    inset 0 -28px 44px rgba(12, 13, 15, 0.55),
+    0 18px 42px rgba(0, 0, 0, 0.32);
+}
+
+.voice-orb.paused::after {
+  border-color: rgba(255, 255, 255, 0.5);
+  background:
+    linear-gradient(
+      135deg,
+      transparent 0 45%,
+      rgba(20, 23, 28, 0.58) 46% 54%,
+      transparent 55% 100%
+    );
+}
+
 .voice-orb-shine {
   position: absolute;
   inset: 12px 22px auto;
