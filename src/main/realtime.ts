@@ -99,6 +99,7 @@ function realtimeInstructions(): string {
     "- If the user asks to create a project or chat and gives an explicit name, use that name.",
     "- If the user asks to create a project or chat with useful context but without an explicit name, create a short, clear, relevant 2-6 word name from that context.",
     "- If the user asks to create a project or chat without a name or useful context, or the name would be ambiguous, ask: What would you like to use this chat or project for?",
+    "- Creating a project only creates the project folder. Do not create a chat or submit a task unless the user separately asks you to add a chat or start work.",
     "- Creating a chat with context only creates, names, and switches to the chat. Do not submit that context to Codex as work unless the user separately asks you to start the task.",
     "- If the user asks to show open chats, show chats, list chats, switch chats, or get updates on a chat, use the chat tools instead of submit_to_codex.",
     "- Only add context that came from the current live voice conversation.",
@@ -301,7 +302,7 @@ function realtimeTools(): unknown[] {
       type: "function",
       name: "create_new_codex_project",
       description:
-        "Create a new Codex voice project with a fresh Documents workspace folder. Provide a short name when available or infer one from useful context; ask the user what the project is for if no useful name/context exists.",
+        "Create a new Codex voice project with a fresh Documents workspace folder, without creating a chat/thread or submitting work. Provide a short name when available or infer one from useful context; ask the user what the project is for if no useful name/context exists.",
       parameters: {
         type: "object",
         properties: {

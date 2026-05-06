@@ -456,7 +456,7 @@ function normalizeChat(
   const chat = value as VoiceChat & { reasoningEffort?: ReasoningEffort | null; permissionMode?: CodexPermissionMode };
   return {
     id: String(chat.id ?? randomUUID()),
-    displayName: String(chat.displayName ?? "Main task"),
+    displayName: String(chat.displayName ?? "New chat"),
     codexThreadId: stringOrNull(chat.codexThreadId),
     model: stringOrNull(chat.model) ?? fallbackModel,
     reasoningEffort: reasoningEffortOrNull(chat.reasoningEffort) ?? fallbackReasoningEffort,

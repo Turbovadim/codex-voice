@@ -124,41 +124,25 @@ export class VoiceCodexOrchestrator extends EventEmitter {
 
   async createProject(name?: string): Promise<VoiceProject> {
     const project = await this.store.createProject(name);
-    const chatSettings = this.initialChatSettings(project);
-    const result = (await this.codex.request("thread/start", {
-      cwd: project.folderPath,
-      ...(chatSettings.model ? { model: chatSettings.model } : {}),
-      ...permissionParams(chatSettings.permissionMode),
-      personality: "friendly",
-      serviceName: "codex_voice",
-    })) as { thread?: { id?: string } };
-
-    const codexThreadId = result.thread?.id;
-    if (!codexThreadId) {
-      throw new Error("Codex did not return a thread id.");
-    }
-
-    const updated = await this.store.addChat(project.id, "Main task", codexThreadId, chatSettings);
-    this.activeProjectId = updated.id;
+    this.activeProjectId = project.id;
     this.showProjectChatsFlag = false;
-    this.status = `Active project: ${updated.displayName}`;
-    this.emitEvent("app", "projectCreated", `Created project "${updated.displayName}".`, updated);
+    this.status = `Active project: ${project.displayName}`;
+    this.emitEvent("app", "projectCreated", `Created project "${project.displayName}".`, project);
     this.emitState();
-    return updated;
+    return project;
   }
 
   async resumeProject(projectId: string): Promise<VoiceProject> {
     let project = await this.store.getProject(projectId);
     if (!project) throw new Error(`Unknown project: ${projectId}`);
     let chat = activeChatForProject(project);
-    if (!chat?.codexThreadId) {
-      const updated = await this.startChatThread(project, "Main task");
-      this.activeProjectId = updated.id;
+    if (!chat) {
+      this.activeProjectId = project.id;
       this.showProjectChatsFlag = false;
-      this.status = `Created a new chat for project: ${updated.displayName}`;
-      this.emitEvent("app", "projectResumed", this.status, updated);
+      this.status = `Resumed project: ${project.displayName}`;
+      this.emitEvent("app", "projectResumed", `Resumed project "${project.displayName}".`, project);
       this.emitState();
-      return updated;
+      return project;
     }
 
     const resumed = await this.resumeChatThread(project, chat);
@@ -235,12 +219,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     const chat = project.chats.find((candidate) => candidate.id === chatId && !candidate.archivedAt);
     if (!chat) throw new Error(`Unknown chat: ${chatId}`);
 
-    const visibleChats = project.chats.filter((candidate) => !candidate.archivedAt);
-    const projectWithReplacement =
-      visibleChats.length === 1 && visibleChats[0]?.id === chat.id
-        ? await this.startChatThread(project, "Main task")
-        : project;
-    const updated = await this.store.archiveChat(projectWithReplacement.id, chat.id);
+    const updated = await this.store.archiveChat(project.id, chat.id);
     if (this.activeProjectId === project.id) {
       this.activeProjectId = updated.id;
       this.showProjectChatsFlag = Boolean(updated.activeChatId);
@@ -289,9 +268,10 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     let context: ChatContext;
     if (!this.activeProjectId && !chatId) {
       const project = await this.createProject(titleFromText(trimmed));
-      context = this.requireActiveChatContextFromProject(project);
+      const updated = await this.startChatThread(project, titleFromText(trimmed));
+      context = this.requireActiveChatContextFromProject(updated);
     } else {
-      context = await this.requireChatContext(chatId);
+      context = await this.requireChatContextForPrompt(trimmed, chatId);
     }
     const { project, chat } = await this.resumeChatThread(context.project, context.chat);
     if (!chat.codexThreadId) throw new Error("Active chat is missing a Codex thread id.");
@@ -637,7 +617,28 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       return this.codexSettings(await this.getActiveProject());
     }
 
-    const { project, chat } = await this.requireChatContext();
+    const project = await this.requireProject();
+    const chat = activeChatForProject(project);
+    if (!chat) {
+      const updated = await this.store.updateProject(project.id, {
+        ...(settings.model !== undefined ? { model: settings.model } : {}),
+        ...(settings.reasoningEffort !== undefined
+          ? { reasoningEffort: settings.reasoningEffort }
+          : {}),
+        ...(settings.permissionMode !== undefined
+          ? { permissionMode: settings.permissionMode ?? DEFAULT_CODEX_PERMISSION_MODE }
+          : {}),
+        lastStatus: "Updated Codex settings.",
+      });
+      this.status = `Updated project Codex settings: ${this.describeModelEffort(
+        updated.model,
+        updated.reasoningEffort,
+      )}, ${this.describePermissions(updated.permissionMode)}.`;
+      this.emitEvent("app", "settingsChanged", this.status, updated);
+      this.emitState();
+      return this.codexSettings(updated);
+    }
+
     const updated = await this.store.updateChat(project.id, chat.id, {
       ...(settings.model !== undefined ? { model: settings.model } : {}),
       ...(settings.reasoningEffort !== undefined
@@ -699,10 +700,19 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       return { project, chat };
     }
 
+    const project = await this.requireProject();
+    const chat = activeChatForProject(project);
+    if (!chat) throw new Error("Active project does not have an active chat.");
+    return { project, chat };
+  }
+
+  private async requireChatContextForPrompt(text: string, chatId?: string): Promise<ChatContext> {
+    if (chatId) return this.requireChatContext(chatId);
+
     let project = await this.requireProject();
     let chat = activeChatForProject(project);
     if (!chat) {
-      project = await this.createChat("Main task", project.id);
+      project = await this.startChatThread(project, titleFromText(text));
       chat = activeChatForProject(project);
     }
     if (!chat) throw new Error("Active project does not have an active chat.");
