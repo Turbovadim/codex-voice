@@ -55,7 +55,7 @@ const emptyState: AppState = {
   },
   realtime: {
     available: false,
-    model: "gpt-realtime-1.5",
+    model: "gpt-realtime-2",
     voice: "marin",
     reason: null,
     apiKeySource: null,

@@ -11,7 +11,7 @@ export function realtimeConfig(): {
   apiKeySource: "environment" | "saved" | null;
   apiKeyEncrypted: boolean;
 } {
-  const model = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-1.5";
+  const model = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2";
   const voice = process.env.OPENAI_REALTIME_VOICE || "marin";
   const status = getOpenAiApiKeyStatus();
   const available = status.configured;
