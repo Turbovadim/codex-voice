@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
+import { config as loadDotEnv } from "dotenv";
 import { clearOpenAiApiKey, saveOpenAiApiKey } from "./apiKeyStore";
 import appIcon from "./assets/app-icon.png?asset";
 import { CodexBridge } from "./codexBridge";
@@ -15,6 +16,8 @@ import type {
 } from "../shared/types";
 
 const maxBufferedEvents = 250;
+
+loadDotEnv();
 
 let voiceWindow: BrowserWindow | null = null;
 let debugWindow: BrowserWindow | null = null;
