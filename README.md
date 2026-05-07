@@ -1,4 +1,4 @@
-# Voice Computer Use
+# Codex Voice Agent
 
 A local Electron and TypeScript app that lets you talk to Codex through OpenAI
 Realtime voice. The Realtime model is the voice/control layer; Codex app-server
