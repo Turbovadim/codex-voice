@@ -46,7 +46,13 @@ Optional Realtime settings:
 ```sh
 export OPENAI_REALTIME_MODEL=gpt-realtime-2
 export OPENAI_REALTIME_VOICE=marin
+export OPENAI_REALTIME_REASONING_EFFORT=low
 ```
+
+The app uses OpenAI's ephemeral-token WebRTC path: the Electron main process
+creates a Realtime client secret with the saved or environment API key, and the
+renderer posts browser SDP to `/v1/realtime/calls` with that short-lived secret.
+It does not use the unified server-side multipart `/v1/realtime/calls` sample.
 
 ## Development
 

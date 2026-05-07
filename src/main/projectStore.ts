@@ -8,7 +8,9 @@ import {
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_PERMISSION_MODE,
   DEFAULT_CODEX_REASONING_EFFORT,
+  DEFAULT_CODEX_SERVICE_TIER,
   type CodexPermissionMode,
+  type CodexServiceTier,
   type ReasoningEffort,
   type VoiceChat,
   type VoiceProject,
@@ -95,6 +97,7 @@ export class ProjectStore {
       codexThreadId: null,
       model: null,
       reasoningEffort: null,
+      serviceTier: DEFAULT_CODEX_SERVICE_TIER,
       permissionMode: DEFAULT_CODEX_PERMISSION_MODE,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -159,7 +162,12 @@ export class ProjectStore {
     projectId: string,
     displayName: string,
     codexThreadId: string,
-    settings: { model?: string | null; reasoningEffort?: ReasoningEffort | null; permissionMode?: CodexPermissionMode } = {},
+    settings: {
+      model?: string | null;
+      reasoningEffort?: ReasoningEffort | null;
+      serviceTier?: CodexServiceTier | null;
+      permissionMode?: CodexPermissionMode;
+    } = {},
   ): Promise<VoiceProject> {
     const existing = await this.getProject(projectId);
     if (!existing) {
@@ -170,6 +178,7 @@ export class ProjectStore {
     const model = settings.model ?? existing.model ?? DEFAULT_CODEX_MODEL;
     const reasoningEffort =
       settings.reasoningEffort ?? existing.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT;
+    const serviceTier = settings.serviceTier ?? existing.serviceTier ?? DEFAULT_CODEX_SERVICE_TIER;
     const permissionMode = settings.permissionMode ?? existing.permissionMode ?? DEFAULT_CODEX_PERMISSION_MODE;
     const chat: VoiceChat = {
       id: randomUUID(),
@@ -177,6 +186,7 @@ export class ProjectStore {
       codexThreadId,
       model,
       reasoningEffort,
+      serviceTier,
       permissionMode,
       createdAt: now,
       updatedAt: now,
@@ -419,10 +429,21 @@ function normalizeProject(value: unknown): VoiceProject {
   const projectModel = stringOrNull(project.model) ?? DEFAULT_CODEX_MODEL;
   const projectReasoningEffort =
     reasoningEffortOrNull(project.reasoningEffort) ?? DEFAULT_CODEX_REASONING_EFFORT;
+  const projectServiceTier = serviceTierOrNull(project.serviceTier) ?? DEFAULT_CODEX_SERVICE_TIER;
   const projectPermissionMode = permissionModeOrDefault(project.permissionMode);
   const chats = Array.isArray(project.chats)
     ? project.chats
-        .map((chat) => normalizeChat(chat, createdAt, updatedAt, projectModel, projectReasoningEffort, projectPermissionMode))
+        .map((chat) =>
+          normalizeChat(
+            chat,
+            createdAt,
+            updatedAt,
+            projectModel,
+            projectReasoningEffort,
+            projectServiceTier,
+            projectPermissionMode,
+          ),
+        )
         .filter((chat) => chat.id)
     : [];
 
@@ -443,6 +464,7 @@ function normalizeProject(value: unknown): VoiceProject {
     codexThreadId: activeChat?.codexThreadId ?? null,
     model: stringOrNull(project.model),
     reasoningEffort: reasoningEffortOrNull(project.reasoningEffort),
+    serviceTier: serviceTierOrNull(project.serviceTier),
     permissionMode: permissionModeOrDefault(project.permissionMode),
   };
 }
@@ -453,15 +475,22 @@ function normalizeChat(
   fallbackUpdatedAt: string,
   fallbackModel: string,
   fallbackReasoningEffort: ReasoningEffort,
+  fallbackServiceTier: CodexServiceTier | null,
   fallbackPermissionMode: CodexPermissionMode,
 ): VoiceChat {
-  const chat = value as VoiceChat & { reasoningEffort?: ReasoningEffort | null; permissionMode?: CodexPermissionMode };
+  const chat = value as VoiceChat & {
+    reasoningEffort?: ReasoningEffort | null;
+    serviceTier?: CodexServiceTier | null;
+    permissionMode?: CodexPermissionMode;
+  };
+  const hasStoredServiceTier = Object.prototype.hasOwnProperty.call(chat, "serviceTier");
   return {
     id: String(chat.id ?? randomUUID()),
     displayName: String(chat.displayName ?? "New chat"),
     codexThreadId: stringOrNull(chat.codexThreadId),
     model: stringOrNull(chat.model) ?? fallbackModel,
     reasoningEffort: reasoningEffortOrNull(chat.reasoningEffort) ?? fallbackReasoningEffort,
+    serviceTier: hasStoredServiceTier ? serviceTierOrNull(chat.serviceTier) : fallbackServiceTier,
     permissionMode: permissionModeOrDefault(chat.permissionMode, fallbackPermissionMode),
     createdAt: stringOrNow(chat.createdAt, fallbackCreatedAt),
     updatedAt: stringOrNow(chat.updatedAt, fallbackUpdatedAt),
@@ -507,6 +536,10 @@ function reasoningEffortOrNull(value: unknown): ReasoningEffort | null {
   return typeof value === "string" && ["none", "minimal", "low", "medium", "high", "xhigh"].includes(value)
     ? (value as ReasoningEffort)
     : null;
+}
+
+function serviceTierOrNull(value: unknown): CodexServiceTier | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function permissionModeOrDefault(value: unknown, fallback = DEFAULT_CODEX_PERMISSION_MODE): CodexPermissionMode {

@@ -62,7 +62,10 @@ export class RealtimeVoiceClient {
       this.dc = dc;
       dc.addEventListener("open", () => {
         this.setPaused(false);
-        this.callbacks.onConnectionChange(true, `Connected to ${secret.model} (${secret.voice}).`);
+        this.callbacks.onConnectionChange(
+          true,
+          `Connected to ${secret.model} (${secret.voice}, reasoning ${secret.reasoningEffort}).`,
+        );
         this.log("connection", "Realtime data channel opened.");
       });
       dc.addEventListener("close", () => {
@@ -138,13 +141,10 @@ export class RealtimeVoiceClient {
     });
   }
 
-  notifyCodexTurnCompleted(event: AppEvent): void {
+  injectCodexTurnOutput(output: CodexTurnOutput): void {
     if (!this.connected) return;
-    const update = codexCompletionUpdateText(event);
-    if (!update) return;
-
-    this.sendConversationText(update);
-    this.log("codexCompletion", event.message, event.raw);
+    this.sendConversationText(codexTurnOutputContextText(output));
+    this.log("codexTurnOutputContext", "Injected Codex final output into Realtime context.", output);
     if (this.paused) return;
 
     this.send({
@@ -152,19 +152,18 @@ export class RealtimeVoiceClient {
       response: {
         output_modalities: ["audio"],
         instructions: [
-          "A Codex completion status update was just added to the conversation by the app.",
-          "Briefly tell the user that Codex finished.",
-          "Use one short natural sentence.",
+          "App-provided Codex final output was just added to the conversation.",
+          "Give the user a short natural completion nudge, not a full summary.",
+          "Prefer the shape: 'Hey, just wanted to let you know Codex finished ...' but vary the wording naturally.",
+          "Use the final output to decide whether the blank should be a specific task/outcome, a blocker, or no extra detail.",
+          "Share at most one specific detail unless the final output says Codex failed or the user needs to act.",
+          "If no concise specific detail is obvious, simply say Codex finished.",
+          "Do not read long paths, logs, lists, or test output aloud.",
+          "Use one short sentence, or two only if there is an important next step.",
           "Do not call tools.",
         ].join("\n"),
       },
     });
-  }
-
-  injectCodexTurnOutput(output: CodexTurnOutput): void {
-    if (!this.connected) return;
-    this.sendConversationText(codexTurnOutputContextText(output));
-    this.log("codexTurnOutputContext", "Injected Codex final output into Realtime context.", output);
   }
 
   speakPendingRequest(request: PendingCodexRequest): void {
@@ -649,38 +648,6 @@ function summarizePendingRequestForSpeech(request: PendingCodexRequest): Record<
       options: question.options?.map((option) => option.label),
     })),
   };
-}
-
-function codexCompletionUpdateText(event: AppEvent): string | null {
-  const message = event.message.trim();
-  if (!message) return null;
-  const raw = (event.raw ?? {}) as {
-    threadId?: unknown;
-    turn?: {
-      id?: unknown;
-      status?: unknown;
-      error?: { message?: unknown };
-    };
-  };
-  const turn = raw.turn ?? {};
-  const lines = [
-    "App status update from Codex, not a user request.",
-    "Codex turn completed.",
-    `Status: ${message}`,
-  ];
-  if (typeof raw.threadId === "string" && raw.threadId.trim()) {
-    lines.push(`Thread ID: ${raw.threadId}`);
-  }
-  if (typeof turn.id === "string" && turn.id.trim()) {
-    lines.push(`Turn ID: ${turn.id}`);
-  }
-  if (typeof turn.status === "string" && turn.status.trim()) {
-    lines.push(`Turn status: ${turn.status}`);
-  }
-  if (typeof turn.error?.message === "string" && turn.error.message.trim()) {
-    lines.push(`Error: ${turn.error.message}`);
-  }
-  return lines.join("\n");
 }
 
 function codexTurnOutputContextText(output: CodexTurnOutput): string {

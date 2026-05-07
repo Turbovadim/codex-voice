@@ -2,23 +2,28 @@ import type { RealtimeClientSecret } from "../shared/types";
 import { getOpenAiApiKey, getOpenAiApiKeyStatus } from "./apiKeyStore";
 
 const REALTIME_ENDPOINT = "https://api.openai.com/v1/realtime/client_secrets";
+const REALTIME_REASONING_EFFORTS = ["minimal", "low", "medium", "high"] as const;
+type RealtimeReasoningEffort = (typeof REALTIME_REASONING_EFFORTS)[number];
 
 export function realtimeConfig(): {
   available: boolean;
   model: string;
   voice: string;
+  reasoningEffort: RealtimeReasoningEffort;
   reason: string | null;
   apiKeySource: "environment" | "saved" | null;
   apiKeyEncrypted: boolean;
 } {
   const model = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2";
   const voice = process.env.OPENAI_REALTIME_VOICE || "marin";
+  const reasoningEffort = realtimeReasoningEffort(process.env.OPENAI_REALTIME_REASONING_EFFORT);
   const status = getOpenAiApiKeyStatus();
   const available = status.configured;
   return {
     available,
     model,
     voice,
+    reasoningEffort,
     reason: available
       ? null
       : "Add an OpenAI API key from the menu to enable Realtime voice.",
@@ -44,6 +49,9 @@ export async function createRealtimeClientSecret(): Promise<RealtimeClientSecret
       session: {
         type: "realtime",
         model: config.model,
+        reasoning: {
+          effort: config.reasoningEffort,
+        },
         output_modalities: ["audio"],
         instructions: realtimeInstructions(),
         audio: {
@@ -83,6 +91,7 @@ export async function createRealtimeClientSecret(): Promise<RealtimeClientSecret
     expiresAt: data.expires_at ?? data.client_secret?.expires_at,
     model: config.model,
     voice: config.voice,
+    reasoningEffort: config.reasoningEffort,
   };
 }
 
@@ -104,6 +113,27 @@ function realtimeInstructions(): string {
     "- If the user asks to show open chats, show chats, list chats, switch chats, or get updates on a chat, use the chat tools instead of submit_to_codex.",
     "- Only add context that came from the current live voice conversation.",
     "- Do not make the task more ambitious than what the user asked.",
+    "",
+    "# Reasoning",
+    "- For greetings, direct status checks, approval answers, and short confirmations, respond quickly.",
+    "- For multi-step user requests, chat routing, task handoff, or possible ambiguity, reason briefly before speaking or calling a tool.",
+    "- Do not spend extra reasoning effort trying to reconstruct unclear audio.",
+    "",
+    "# Preambles",
+    "- Use one short spoken preamble only when you are about to hand off noticeable work to Codex or wait for a tool result.",
+    "- Skip preambles for yes/no approvals, user corrections, status answers, unclear audio, and lightweight chat/project tools.",
+    "- Describe the action, not your internal reasoning. Avoid filler like 'let me think' or 'one moment while I process that'.",
+    "",
+    "# Unclear Audio",
+    "- Only act on clear audio or text.",
+    "- If the user's audio is ambiguous, noisy, cut off, or you are unsure of the exact words, ask one brief clarification question.",
+    "- Do not guess missing words, approve requests, or call submit_to_codex when the audio is unclear.",
+    "",
+    "# Tool Behavior",
+    "- Use only tools explicitly provided in the current tool list.",
+    "- Do not invent, rename, simulate, or claim to use unavailable tools.",
+    "- Only say Codex completed or changed something after the relevant tool result confirms it.",
+    "- If a tool fails, explain the failure briefly in user-friendly language and offer the next useful step.",
     "",
     "# Conversation",
     "- Speak warmly and briefly.",
@@ -403,4 +433,14 @@ function realtimeTools(): unknown[] {
       },
     },
   ];
+}
+
+function realtimeReasoningEffort(value: string | undefined): RealtimeReasoningEffort {
+  if (!value) return "low";
+  if (REALTIME_REASONING_EFFORTS.includes(value as RealtimeReasoningEffort)) {
+    return value as RealtimeReasoningEffort;
+  }
+  throw new Error(
+    `Unknown OPENAI_REALTIME_REASONING_EFFORT "${value}". Use one of: ${REALTIME_REASONING_EFFORTS.join(", ")}.`,
+  );
 }

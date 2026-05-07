@@ -251,6 +251,7 @@ function registerIpc(): void {
         settings: {
           model?: string | null;
           reasoningEffort?: ReasoningEffort | null;
+          serviceTier?: string | null;
           permissionMode?: CodexPermissionMode | null;
         };
         scope: CodexSettingsScope;

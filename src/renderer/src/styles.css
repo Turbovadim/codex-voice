@@ -393,18 +393,18 @@ code {
   justify-self: end;
 }
 
-.voice-model-trigger span:first-child {
+.voice-model-trigger-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.voice-model-trigger span:nth-child(2) {
+.voice-model-trigger-separator {
   color: rgba(198, 204, 214, 0.5);
 }
 
-.voice-model-trigger span:nth-child(3) {
+.voice-model-trigger-effort {
   flex: 0 0 auto;
   color: rgba(198, 204, 214, 0.72);
   white-space: nowrap;
@@ -423,12 +423,20 @@ code {
   stroke-width: 2.25;
 }
 
+.voice-model-trigger .lightning-icon {
+  width: 14px;
+  height: 14px;
+  color: rgba(218, 223, 232, 0.82);
+  fill: currentColor;
+  stroke: none;
+}
+
 .voice-model-panel {
   position: absolute;
   top: 46px;
   right: 0;
   display: grid;
-  width: 228px;
+  width: 260px;
   gap: 14px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 18px;
@@ -471,21 +479,24 @@ code {
   transform: translateY(-50%);
 }
 
-.voice-effort-list {
+.voice-effort-list,
+.voice-speed-list {
   display: grid;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   gap: 3px;
   padding-top: 12px;
 }
 
-.voice-effort-list > span {
+.voice-effort-list > span,
+.voice-speed-list > span {
   color: rgba(206, 211, 221, 0.55);
   font-size: 13px;
   font-weight: 520;
   padding: 0 8px 4px;
 }
 
-.voice-effort-list button {
+.voice-effort-list button,
+.voice-speed-list button {
   display: grid;
   min-height: 36px;
   grid-template-columns: minmax(0, 1fr) 20px;
@@ -497,12 +508,40 @@ code {
   text-align: left;
 }
 
+.voice-speed-list button {
+  min-height: 49px;
+}
+
+.voice-speed-list button > span {
+  display: grid;
+  gap: 3px;
+}
+
+.voice-speed-list small {
+  color: rgba(206, 211, 221, 0.56);
+  font-size: 11px;
+  font-weight: 520;
+  line-height: 1.15;
+}
+
 .voice-effort-list button:hover,
-.voice-effort-list button.selected {
+.voice-effort-list button.selected,
+.voice-speed-list button:hover:not(:disabled),
+.voice-speed-list button.selected {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.voice-effort-list button svg {
+.voice-speed-list button:disabled {
+  color: rgba(255, 255, 255, 0.36);
+  cursor: default;
+}
+
+.voice-speed-list button:disabled small {
+  color: rgba(206, 211, 221, 0.34);
+}
+
+.voice-effort-list button svg,
+.voice-speed-list button svg {
   width: 18px;
   height: 18px;
   justify-self: end;
