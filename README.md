@@ -1,15 +1,17 @@
-# Codex Voice Agent
+# Codex Voice Companion
 
 A local Electron and TypeScript app that lets you talk to Codex through OpenAI
 Realtime voice. The Realtime model is the voice/control layer; Codex app-server
 is the computer-use agent that owns local execution, approvals, questions,
-project state, and tool work.
+workspace state, threads, approvals, questions, and tool work.
 
 ## What it does
 
 - Opens a compact voice window for speaking requests to Codex.
 - Starts, resumes, summarizes, interrupts, and steers Codex app-server turns.
-- Stores per-project workspaces under `~/Documents/Codex Voice Projects/`.
+- Attaches to the current workspace and syncs Codex threads through
+  `codex app-server`.
+- Stores only companion metadata under the app support folder.
 - Forwards Codex approval and tool-question requests back through the UI and
   voice layer.
 - Uses OpenAI Realtime for audio input/output and `codex app-server` for the
@@ -18,7 +20,7 @@ project state, and tool work.
 ## Debugging
 
 This repo is still early, so the app includes a debugging-oriented window rather
-than a polished management surface. It shows project state, chats, runtime
+than a polished management surface. It shows workspace state, chats, runtime
 status, events, pending approvals, and manual send/steer controls.
 
 ## Requirements

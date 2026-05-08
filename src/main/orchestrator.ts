@@ -49,6 +49,19 @@ type ThreadReadResponse = {
   };
 };
 
+type ThreadListResponse = {
+  data?: CodexThreadSummary[];
+};
+
+type CodexThreadSummary = {
+  id?: string;
+  name?: string | null;
+  preview?: string | null;
+  createdAt?: number | null;
+  updatedAt?: number | null;
+  status?: unknown;
+};
+
 type CodexThreadTurn = {
   id?: string;
   status?: string;
@@ -120,9 +133,30 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     await this.store.ensureReady();
     await this.codex.start();
     await this.refreshModels();
+    const initialProject = await this.store.getMostRecentProject();
+    if (initialProject) {
+      this.activeProjectId = initialProject.id;
+      this.showProjectChatsFlag = true;
+      await this.syncWorkspaceThreads(initialProject.id);
+    }
     this.status = "Ready.";
     this.emitEvent("app", "ready", "Codex app-server is ready.");
     this.emitState();
+  }
+
+  async attachWorkspace(folderPath: string): Promise<VoiceProject> {
+    const linked = await this.store.ensureLinkedWorkspace(folderPath);
+    this.activeProjectId = linked.id;
+    this.showProjectChatsFlag = true;
+    const synced = await this.syncWorkspaceThreads(linked.id);
+    this.status = `Attached Codex workspace: ${synced.displayName}`;
+    this.emitEvent("app", "workspaceAttached", this.status, {
+      projectId: synced.id,
+      folderPath: synced.folderPath,
+      threads: synced.chats.length,
+    });
+    this.emitState();
+    return synced;
   }
 
   shutdown(): void {
@@ -164,6 +198,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
   async resumeProject(projectId: string): Promise<VoiceProject> {
     let project = await this.store.getProject(projectId);
     if (!project) throw new Error(`Unknown project: ${projectId}`);
+    project = await this.syncWorkspaceThreads(project.id);
     let chat = activeChatForProject(project);
     if (!chat) {
       this.activeProjectId = project.id;
@@ -276,7 +311,8 @@ export class VoiceCodexOrchestrator extends EventEmitter {
 
   async listChats(projectId?: string): Promise<VoiceChat[]> {
     const project = await this.requireProject(projectId);
-    return project.chats.filter((chat) => !chat.archivedAt);
+    const synced = await this.syncWorkspaceThreads(project.id);
+    return synced.chats.filter((chat) => !chat.archivedAt);
   }
 
   async showProjectChats(open = true): Promise<void> {
@@ -317,7 +353,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       input: [
         {
           type: "text",
-          text: codexTurnText(trimmed),
+          text: trimmed,
           text_elements: [],
         },
       ],
@@ -426,7 +462,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
         {
           type: "text",
           text:
-            "Please summarize this Codex voice project for the user in 4-6 concise bullets. Focus on what the user was trying to do, what Codex changed or found, current status, and useful next steps. Do not invent context.",
+            "Please summarize this Codex workspace thread for the user in 4-6 concise bullets. Focus on what the user was trying to do, what Codex changed or found, current status, and useful next steps. Do not invent context.",
           text_elements: [],
         },
       ],
@@ -722,7 +758,7 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     const id = projectId ?? this.activeProjectId;
     if (!id) throw new Error("No active Codex project.");
     const project = await this.store.getProject(id);
-    if (!project) throw new Error(`Unknown voice project: ${id}`);
+    if (!project) throw new Error(`Unknown Codex workspace: ${id}`);
     return project;
   }
 
@@ -804,12 +840,14 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       ...(chatSettings.model ? { model: chatSettings.model } : {}),
       ...(chatSettings.serviceTier ? { serviceTier: chatSettings.serviceTier } : {}),
       ...permissionParams(chatSettings.permissionMode),
+      developerInstructions: codexThreadDeveloperInstructions(),
       personality: "friendly",
       serviceName: "codex_voice",
     })) as { thread?: { id?: string } };
 
     const codexThreadId = result.thread?.id;
     if (!codexThreadId) throw new Error("Codex did not return a replacement thread id.");
+    await this.setThreadName(codexThreadId, updatedChatTitle(chat.displayName));
 
     const updatedProject = await this.store.updateChat(project.id, chat.id, {
       codexThreadId,
@@ -834,14 +872,70 @@ export class VoiceCodexOrchestrator extends EventEmitter {
       ...(chatSettings.model ? { model: chatSettings.model } : {}),
       ...(chatSettings.serviceTier ? { serviceTier: chatSettings.serviceTier } : {}),
       ...permissionParams(chatSettings.permissionMode),
+      developerInstructions: codexThreadDeveloperInstructions(),
       personality: "friendly",
       serviceName: "codex_voice",
     })) as { thread?: { id?: string } };
 
     const codexThreadId = result.thread?.id;
     if (!codexThreadId) throw new Error("Codex did not return a thread id.");
+    await this.setThreadName(codexThreadId, updatedChatTitle(displayName));
 
     return this.store.addChat(project.id, displayName, codexThreadId, chatSettings);
+  }
+
+  private async setThreadName(threadId: string, name: string): Promise<void> {
+    try {
+      await this.codex.request("thread/name/set", { threadId, name });
+    } catch (error) {
+      this.emitEvent("app", "threadNameUnavailable", "Codex thread was created, but its display name could not be saved.", {
+        threadId,
+        name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async syncWorkspaceThreads(projectId: string): Promise<VoiceProject> {
+    const project = await this.requireProject(projectId);
+    const response = (await this.codex.request("thread/list", {
+      cwd: project.folderPath,
+      archived: false,
+      limit: 100,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+    })) as ThreadListResponse;
+
+    const existingByThread = new Map(
+      project.chats
+        .filter((chat): chat is VoiceChat & { codexThreadId: string } => Boolean(chat.codexThreadId))
+        .map((chat) => [chat.codexThreadId, chat]),
+    );
+    const threads = Array.isArray(response.data) ? response.data : [];
+    const chats = threads
+      .filter((thread): thread is CodexThreadSummary & { id: string } => typeof thread.id === "string" && Boolean(thread.id))
+      .map((thread) => {
+        const existing = existingByThread.get(thread.id);
+        const createdAt = unixSecondsToIso(thread.createdAt, existing?.createdAt ?? project.createdAt);
+        const updatedAt = unixSecondsToIso(thread.updatedAt, existing?.updatedAt ?? createdAt);
+        return {
+          id: existing?.id ?? thread.id,
+          displayName: titleFromThread(thread),
+          codexThreadId: thread.id,
+          model: existing?.model ?? project.model ?? DEFAULT_CODEX_MODEL,
+          reasoningEffort: existing?.reasoningEffort ?? project.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
+          serviceTier: existing?.serviceTier ?? project.serviceTier ?? DEFAULT_CODEX_SERVICE_TIER,
+          permissionMode: existing?.permissionMode ?? project.permissionMode ?? DEFAULT_CODEX_PERMISSION_MODE,
+          createdAt,
+          updatedAt,
+          archivedAt: existing?.archivedAt ?? null,
+          lastSummary: existing?.lastSummary ?? null,
+          lastStatus: describeThreadSummaryStatus(thread.status) ?? existing?.lastStatus ?? "Codex thread",
+          lastTurnOutput: existing?.lastTurnOutput ?? null,
+        } satisfies VoiceChat;
+      });
+
+    return this.store.replaceChats(project.id, chats);
   }
 
   private handleServerRequest(message: CodexJsonMessage): void {
@@ -1284,15 +1378,17 @@ export class VoiceCodexOrchestrator extends EventEmitter {
     }
 
     if (lowerCommand === "new") {
-      const project = await this.createProject(rest || undefined);
-      return this.commandResult(`Created new Codex voice project: ${project.displayName}\n${project.folderPath}`, project);
+      const project = await this.requireProject();
+      const updated = await this.startChatThread(project, rest || "New Codex thread");
+      const chat = activeChatForProject(updated);
+      return this.commandResult(`Created new Codex thread: ${chat?.displayName ?? "New Codex thread"}`, updated);
     }
 
     if (lowerCommand === "resume") {
       const targetId = args[0] ?? (await this.store.getMostRecentProject())?.id;
-      if (!targetId) throw new Error("No recent Codex voice projects exist yet.");
+      if (!targetId) throw new Error("No linked Codex workspaces exist yet.");
       const project = await this.resumeProject(targetId);
-      return this.commandResult(`Resumed Codex voice project: ${project.displayName}`, project);
+      return this.commandResult(`Resumed Codex workspace: ${project.displayName}`, project);
     }
 
     const unsupported = nativeUnsupportedSlashCommand(lowerCommand);
@@ -2215,7 +2311,35 @@ function activeChatForProject(project: VoiceProject): VoiceChat | null {
 }
 
 function titleFromText(text: string): string {
-  return text.replace(/\s+/g, " ").trim().slice(0, 48) || "Voice Project";
+  return text.replace(/\s+/g, " ").trim().slice(0, 48) || "Codex thread";
+}
+
+function titleFromThread(thread: CodexThreadSummary): string {
+  const title = thread.name?.trim() || userRequestFromVoiceWrapper(thread.preview)?.trim() || thread.preview?.trim();
+  return title ? title.replace(/\s+/g, " ").slice(0, 72) : "Codex thread";
+}
+
+function updatedChatTitle(name: string): string {
+  return name.replace(/\s+/g, " ").trim().slice(0, 72) || "Codex thread";
+}
+
+function userRequestFromVoiceWrapper(text: string | null | undefined): string | null {
+  if (!text?.includes("User's spoken request:")) return null;
+  const request = text.split("User's spoken request:").pop()?.trim();
+  return request || null;
+}
+
+function unixSecondsToIso(value: unknown, fallback: string): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? new Date(value * 1000).toISOString()
+    : fallback;
+}
+
+function describeThreadSummaryStatus(status: unknown): string | null {
+  if (!status || typeof status !== "object") return null;
+  const value = status as { type?: unknown; activeFlags?: unknown[] };
+  if (value.type === "active") return `Active (${value.activeFlags?.length ?? 0} flags)`;
+  return typeof value.type === "string" && value.type ? value.type : null;
 }
 
 function parseSlashInput(text: string): { command: string; args: string[]; rest: string } {
@@ -2238,7 +2362,7 @@ function nativeSlashHelpText(): string {
     "/apps - list apps/connectors reported by app-server.",
     "/plugins - list plugins reported by app-server.",
     "/permissions [default|auto-review|full-access] - show or update chat permission mode.",
-    "/new [name] and /resume [projectId] - voice-project equivalents of Codex conversation controls.",
+    "/new [name] - create a Codex thread in the active workspace. /resume [workspaceId] - resume a linked workspace.",
     "Recognized but UI-only or not wired yet: /feedback, /plan-mode, /diff, /init, /agent, /mention, /stop, /fork, /side, /clear, /copy, /quit.",
   ].join("\n");
 }
@@ -2560,16 +2684,13 @@ function isMissingCodexThreadError(error: unknown): boolean {
   return /no rollout found for thread id/i.test(message) || /unknown thread/i.test(message);
 }
 
-function codexTurnText(userText: string): string {
+function codexThreadDeveloperInstructions(): string {
   return [
-    "This request came through a local Realtime voice interface.",
-    "Treat the current working directory as this voice project's workspace.",
+    "Requests in this thread may come through a local Realtime voice interface.",
+    "Treat the current working directory as the active Codex workspace.",
     "Codex owns the actual planning, computer use, tool use, browser use, and execution.",
     "For requests that may require controlling desktop apps, the model should use tool_search to discover computer-use before choosing an approach; do this only once per new tool or plugin requested by the user.",
     "If the user's request mentions the Computer Use plugin, Codex must satisfy that request by discovering and using the actual computer-use plugin. Do not replace it with shell commands, open -a, AppleScript via terminal, or other terminal workarounds.",
     "Ask for clarification or approval when needed, and keep final status concise enough to relay by voice.",
-    "",
-    "User's spoken request:",
-    userText,
   ].join("\n");
 }

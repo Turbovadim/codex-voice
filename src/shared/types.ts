@@ -273,6 +273,7 @@ export type CodexVoiceApi = {
   getEvents(): Promise<AppEvent[]>;
   clearEvents(): Promise<void>;
   logEvent(event: AppEvent): Promise<void>;
+  addWorkspaceProject(): Promise<VoiceProject | null>;
   createProject(name?: string): Promise<VoiceProject>;
   resumeProject(projectId: string): Promise<VoiceProject>;
   archiveProject(projectId: string): Promise<VoiceProject>;

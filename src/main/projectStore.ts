@@ -1,5 +1,5 @@
 import { app } from "electron";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -25,19 +25,28 @@ type ListProjectsOptions = {
   includeArchived?: boolean;
 };
 
+type CodexGlobalState = {
+  "project-order"?: unknown;
+  "electron-saved-workspace-roots"?: unknown;
+  "active-workspace-roots"?: unknown;
+};
+
 const INDEX_FILE = ".codex-voice-projects.json";
 const PROJECT_FILE = ".codex-voice-project.json";
+const EXTERNAL_PROJECTS_FOLDER = "linked-projects";
 
 export class ProjectStore {
   readonly baseFolder: string;
   private readonly indexPath: string;
   private readonly lockPath: string;
+  private readonly codexGlobalStatePath: string;
   private mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(baseFolder = path.join(app.getPath("documents"), "Codex Voice Projects")) {
+  constructor(baseFolder = path.join(app.getPath("userData"), "workspace-links")) {
     this.baseFolder = baseFolder;
     this.indexPath = path.join(baseFolder, INDEX_FILE);
     this.lockPath = `${this.indexPath}.lock`;
+    this.codexGlobalStatePath = path.join(process.env.CODEX_HOME || path.join(app.getPath("home"), ".codex"), ".codex-global-state.json");
   }
 
   async ensureReady(): Promise<void> {
@@ -60,8 +69,7 @@ export class ProjectStore {
   async listProjects(options: ListProjectsOptions = {}): Promise<VoiceProject[]> {
     const index = await this.readIndex();
     return index.projects
-      .filter((project) => options.includeArchived || !project.archivedAt)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      .filter((project) => options.includeArchived || !project.archivedAt);
   }
 
   async listArchivedProjects(): Promise<VoiceProject[]> {
@@ -82,7 +90,7 @@ export class ProjectStore {
   async createProject(displayName?: string): Promise<VoiceProject> {
     const now = new Date();
     const id = randomUUID();
-    const safeName = sanitizeProjectName(displayName || "Voice Project");
+    const safeName = sanitizeProjectName(displayName || "Codex Workspace");
     const folderName = `${formatFolderTimestamp(now)} - ${safeName}`;
     const folderPath = await this.uniqueFolderPath(folderName);
 
@@ -90,7 +98,7 @@ export class ProjectStore {
 
     const project: VoiceProject = {
       id,
-      displayName: displayName?.trim() || "Voice Project",
+      displayName: displayName?.trim() || "Codex Workspace",
       folderPath,
       activeChatId: null,
       chats: [],
@@ -110,6 +118,45 @@ export class ProjectStore {
     return project;
   }
 
+  async ensureLinkedWorkspace(folderPath: string, displayName?: string): Promise<VoiceProject> {
+    const resolvedFolderPath = path.resolve(folderPath);
+    await mkdir(resolvedFolderPath, { recursive: true });
+    await this.rememberCodexDesktopProject(resolvedFolderPath);
+
+    const existing = (await this.listProjects({ includeArchived: true })).find(
+      (project) => path.resolve(project.folderPath) === resolvedFolderPath,
+    );
+    if (existing) {
+      return this.upsertProject({
+        ...existing,
+        displayName: displayName?.trim() || existing.displayName,
+        archivedAt: null,
+        lastStatus: "Linked to Codex workspace.",
+      });
+    }
+
+    const now = new Date().toISOString();
+    const project: VoiceProject = {
+      id: projectIdForFolder(resolvedFolderPath),
+      displayName: displayName?.trim() || path.basename(resolvedFolderPath) || "Codex Workspace",
+      folderPath: resolvedFolderPath,
+      activeChatId: null,
+      chats: [],
+      codexThreadId: null,
+      model: null,
+      reasoningEffort: null,
+      serviceTier: DEFAULT_CODEX_SERVICE_TIER,
+      permissionMode: DEFAULT_CODEX_PERMISSION_MODE,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      lastSummary: null,
+      lastStatus: "Linked to Codex workspace.",
+    };
+
+    return this.upsertProject(project);
+  }
+
   async upsertProject(project: VoiceProject): Promise<VoiceProject> {
     return this.enqueueMutation(async () => {
       await mkdir(project.folderPath, { recursive: true });
@@ -119,7 +166,9 @@ export class ProjectStore {
         nextProject,
         ...index.projects.filter((existing) => existing.id !== project.id),
       ];
-      await this.writeJsonAtomic(path.join(project.folderPath, PROJECT_FILE), nextProject);
+      const projectFilePath = this.projectFilePath(nextProject);
+      await mkdir(path.dirname(projectFilePath), { recursive: true });
+      await this.writeJsonAtomic(projectFilePath, nextProject);
       await this.writeIndex({ version: 1, projects: nextProjects });
       return nextProject;
     });
@@ -128,7 +177,7 @@ export class ProjectStore {
   async updateProject(id: string, patch: Partial<VoiceProject>): Promise<VoiceProject> {
     const existing = await this.getProject(id);
     if (!existing) {
-      throw new Error(`Unknown voice project: ${id}`);
+      throw new Error(`Unknown Codex workspace: ${id}`);
     }
     return this.upsertProject({ ...existing, ...patch });
   }
@@ -136,7 +185,7 @@ export class ProjectStore {
   async archiveProject(id: string): Promise<VoiceProject> {
     const existing = await this.getProject(id, { includeArchived: true });
     if (!existing) {
-      throw new Error(`Unknown voice project: ${id}`);
+      throw new Error(`Unknown Codex workspace: ${id}`);
     }
     if (existing.archivedAt) return existing;
     return this.upsertProject({
@@ -149,7 +198,7 @@ export class ProjectStore {
   async restoreProject(id: string): Promise<VoiceProject> {
     const existing = await this.getProject(id, { includeArchived: true });
     if (!existing) {
-      throw new Error(`Unknown voice project: ${id}`);
+      throw new Error(`Unknown Codex workspace: ${id}`);
     }
     return this.upsertProject({
       ...existing,
@@ -171,7 +220,7 @@ export class ProjectStore {
   ): Promise<VoiceProject> {
     const existing = await this.getProject(projectId);
     if (!existing) {
-      throw new Error(`Unknown voice project: ${projectId}`);
+      throw new Error(`Unknown Codex workspace: ${projectId}`);
     }
 
     const now = new Date().toISOString();
@@ -216,7 +265,7 @@ export class ProjectStore {
   async setActiveChat(projectId: string, chatId: string): Promise<VoiceProject> {
     const existing = await this.getProject(projectId);
     if (!existing) {
-      throw new Error(`Unknown voice project: ${projectId}`);
+      throw new Error(`Unknown Codex workspace: ${projectId}`);
     }
     const chat = existing.chats.find((candidate) => candidate.id === chatId);
     if (!chat) {
@@ -233,7 +282,7 @@ export class ProjectStore {
   async updateChat(projectId: string, chatId: string, patch: Partial<VoiceChat>): Promise<VoiceProject> {
     const existing = await this.getProject(projectId);
     if (!existing) {
-      throw new Error(`Unknown voice project: ${projectId}`);
+      throw new Error(`Unknown Codex workspace: ${projectId}`);
     }
     const now = new Date().toISOString();
     let activeThreadId = existing.codexThreadId;
@@ -255,6 +304,30 @@ export class ProjectStore {
     });
   }
 
+  async replaceChats(projectId: string, chats: VoiceChat[], activeChatId?: string | null): Promise<VoiceProject> {
+    const existing = await this.getProject(projectId);
+    if (!existing) {
+      throw new Error(`Unknown Codex workspace: ${projectId}`);
+    }
+
+    const unarchivedChats = chats.filter((chat) => !chat.archivedAt);
+    const nextActiveChatId =
+      activeChatId && unarchivedChats.some((chat) => chat.id === activeChatId)
+        ? activeChatId
+        : existing.activeChatId && unarchivedChats.some((chat) => chat.id === existing.activeChatId)
+          ? existing.activeChatId
+          : unarchivedChats[0]?.id ?? null;
+    const activeChat = nextActiveChatId ? unarchivedChats.find((chat) => chat.id === nextActiveChatId) ?? null : null;
+
+    return this.upsertProject({
+      ...existing,
+      activeChatId: nextActiveChatId,
+      codexThreadId: activeChat?.codexThreadId ?? null,
+      chats,
+      lastStatus: chats.length ? "Synced Codex workspace threads." : "No Codex threads in this workspace yet.",
+    });
+  }
+
   private async setChatArchived(
     projectId: string,
     chatId: string,
@@ -262,7 +335,7 @@ export class ProjectStore {
   ): Promise<VoiceProject> {
     const existing = await this.getProject(projectId, { includeArchived: true });
     if (!existing) {
-      throw new Error(`Unknown voice project: ${projectId}`);
+      throw new Error(`Unknown Codex workspace: ${projectId}`);
     }
 
     const now = new Date().toISOString();
@@ -315,8 +388,8 @@ export class ProjectStore {
   private async readIndex(): Promise<ProjectIndex> {
     await mkdir(this.baseFolder, { recursive: true });
     const index = await this.readIndexFile();
-    if (index) return index;
-    return { version: 1, projects: await this.readProjectsFromFolders() };
+    const localIndex = index ?? { version: 1, projects: await this.readProjectsFromFolders() };
+    return this.mergeCodexDesktopProjects(localIndex);
   }
 
   private async readIndexFile(): Promise<ProjectIndex | null> {
@@ -335,6 +408,93 @@ export class ProjectStore {
   private async writeIndex(index: ProjectIndex): Promise<void> {
     await mkdir(this.baseFolder, { recursive: true });
     await this.writeJsonAtomic(this.indexPath, index);
+  }
+
+  private async mergeCodexDesktopProjects(index: ProjectIndex): Promise<ProjectIndex> {
+    const desktopProjects = await this.readCodexDesktopProjects(index.projects);
+    if (desktopProjects.length === 0) return index;
+
+    const desktopIds = new Set(desktopProjects.map((project) => project.id));
+    return {
+      version: 1,
+      projects: [
+        ...desktopProjects,
+        ...index.projects.filter((project) => !desktopIds.has(project.id) && project.archivedAt),
+      ],
+    };
+  }
+
+  private async readCodexDesktopProjects(existingProjects: VoiceProject[]): Promise<VoiceProject[]> {
+    let parsed: CodexGlobalState;
+    try {
+      parsed = JSON.parse(await readFile(this.codexGlobalStatePath, "utf8")) as CodexGlobalState;
+    } catch {
+      return [];
+    }
+
+    const roots = orderedUniqueStrings(
+      arrayOfStrings(parsed["project-order"]),
+      arrayOfStrings(parsed["active-workspace-roots"]),
+      arrayOfStrings(parsed["electron-saved-workspace-roots"]),
+    ).map((folderPath) => path.resolve(folderPath));
+
+    const existingByPath = new Map(existingProjects.map((project) => [path.resolve(project.folderPath), project]));
+    const now = new Date().toISOString();
+    return roots
+      .filter((folderPath) => existsSync(folderPath))
+      .map((folderPath) => {
+        const existing = existingByPath.get(folderPath);
+        const id = projectIdForFolder(folderPath);
+        const displayName = path.basename(folderPath) || folderPath;
+        return {
+          id,
+          displayName,
+          folderPath,
+          activeChatId: existing?.activeChatId ?? null,
+          chats: existing?.chats ?? [],
+          codexThreadId: existing?.codexThreadId ?? null,
+          model: existing?.model ?? null,
+          reasoningEffort: existing?.reasoningEffort ?? null,
+          serviceTier: existing?.serviceTier ?? DEFAULT_CODEX_SERVICE_TIER,
+          permissionMode: existing?.permissionMode ?? DEFAULT_CODEX_PERMISSION_MODE,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: existing?.updatedAt ?? now,
+          archivedAt: null,
+          lastSummary: existing?.lastSummary ?? null,
+          lastStatus: existing?.lastStatus ?? "Codex Desktop project.",
+        };
+      });
+  }
+
+  private async rememberCodexDesktopProject(folderPath: string): Promise<void> {
+    let parsed: CodexGlobalState;
+    try {
+      parsed = JSON.parse(await readFile(this.codexGlobalStatePath, "utf8")) as CodexGlobalState;
+    } catch {
+      parsed = {};
+    }
+
+    const projectOrder = orderedUniqueStrings([folderPath], arrayOfStrings(parsed["project-order"]));
+    const savedRoots = orderedUniqueStrings([folderPath], arrayOfStrings(parsed["electron-saved-workspace-roots"]));
+    const nextState = {
+      ...parsed,
+      "project-order": projectOrder,
+      "electron-saved-workspace-roots": savedRoots,
+      "active-workspace-roots": [folderPath],
+    };
+
+    await mkdir(path.dirname(this.codexGlobalStatePath), { recursive: true });
+    await this.writeJsonAtomic(this.codexGlobalStatePath, nextState);
+  }
+
+  private projectFilePath(project: VoiceProject): string {
+    const resolvedProjectFolder = path.resolve(project.folderPath);
+    const resolvedBaseFolder = path.resolve(this.baseFolder);
+    const relativeToBase = path.relative(resolvedBaseFolder, resolvedProjectFolder);
+    if (relativeToBase && !relativeToBase.startsWith("..") && !path.isAbsolute(relativeToBase)) {
+      return path.join(resolvedProjectFolder, PROJECT_FILE);
+    }
+    return path.join(this.baseFolder, EXTERNAL_PROJECTS_FOLDER, `${project.id}.json`);
   }
 
   private async readProjectsFromFolders(): Promise<VoiceProject[]> {
@@ -558,6 +718,27 @@ function isErrorWithCode(error: unknown, code: string): boolean {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function projectIdForFolder(folderPath: string): string {
+  return `codex:${createHash("sha256").update(path.resolve(folderPath)).digest("hex").slice(0, 24)}`;
+}
+
+function arrayOfStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : [];
+}
+
+function orderedUniqueStrings(...groups: string[][]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const group of groups) {
+    for (const value of group) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      result.push(value);
+    }
+  }
+  return result;
 }
 
 function sanitizeProjectName(name: string): string {

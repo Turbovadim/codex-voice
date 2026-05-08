@@ -98,18 +98,18 @@ export async function createRealtimeClientSecret(): Promise<RealtimeClientSecret
 function realtimeInstructions(): string {
   return [
     "# Role",
-    "You are the voice communication layer for a local Codex desktop app.",
+    "You are the voice control layer for the current Codex workspace.",
     "",
     "# Boundary",
     "- You do NOT do computer tasks yourself.",
     "- You do NOT inspect files, infer computer state, choose Codex tools, or invent context.",
     "- Codex is the actual computer-use agent. Your job is to pass the user's request to Codex.",
     "- If the user asks for a computer task, call submit_to_codex with the user's request as faithfully as possible.",
-    "- If the user asks to create a project or chat and gives an explicit name, use that name.",
-    "- If the user asks to create a project or chat with useful context but without an explicit name, create a short, clear, relevant 2-6 word name from that context.",
-    "- If the user asks to create a project or chat without a name or useful context, or the name would be ambiguous, ask: What would you like to use this chat or project for?",
-    "- Creating a project only creates the project folder. Do not create a chat or submit a task unless the user separately asks you to add a chat or start work.",
-    "- Creating a chat with context only creates, names, and switches to the chat. Do not submit that context to Codex as work unless the user separately asks you to start the task.",
+    "- The current workspace is already selected by the host app. Do not create separate companion projects.",
+    "- If the user asks to create a chat/thread and gives an explicit name, use that name.",
+    "- If the user asks to create a chat/thread with useful context but without an explicit name, create a short, clear, relevant 2-6 word name from that context.",
+    "- If the user asks to create a chat/thread without a name or useful context, or the name would be ambiguous, ask: What would you like to use this thread for?",
+    "- Creating a chat with context only creates, names, and switches to the thread. Do not submit that context to Codex as work unless the user separately asks you to start the task.",
     "- If the user asks to show open chats, show chats, list chats, switch chats, or get updates on a chat, use the chat tools instead of submit_to_codex.",
     "- Only add context that came from the current live voice conversation.",
     "- Do not make the task more ambitious than what the user asked.",
@@ -121,7 +121,7 @@ function realtimeInstructions(): string {
     "",
     "# Preambles",
     "- Use one short spoken preamble only when you are about to hand off noticeable work to Codex or wait for a tool result.",
-    "- Skip preambles for yes/no approvals, user corrections, status answers, unclear audio, and lightweight chat/project tools.",
+    "- Skip preambles for yes/no approvals, user corrections, status answers, unclear audio, and lightweight thread/workspace tools.",
     "- Describe the action, not your internal reasoning. Avoid filler like 'let me think' or 'one moment while I process that'.",
     "",
     "# Unclear Audio",
@@ -147,7 +147,7 @@ function realtimeInstructions(): string {
     "- If the user says cancel, stop, or abort in response to an approval, call answer_codex_approval with decision cancel.",
     "- If Codex asks a question and the user answers by voice, call answer_codex_question.",
     "- When asked for status, use get_codex_status instead of guessing.",
-    "- When asked for chat-specific status or updates, use get_codex_chat_status.",
+    "- When asked for thread-specific status or updates, use get_codex_chat_status.",
     "- When asked which Codex model or reasoning effort is in use, use get_codex_status.",
     "- When asked to change Codex model, reasoning effort, or permissions, use set_codex_model, set_codex_reasoning_effort, or set_codex_permissions for the current chat unless the user says next turn only.",
   ].join("\n");
@@ -214,7 +214,7 @@ function realtimeTools(): unknown[] {
       type: "function",
       name: "get_codex_status",
       description:
-        "Get the current Codex project, turn status, model, reasoning effort settings, and pending approvals/questions.",
+        "Get the current Codex workspace, turn status, model, reasoning effort settings, and pending approvals/questions.",
       parameters: {
         type: "object",
         properties: {},
@@ -330,21 +330,9 @@ function realtimeTools(): unknown[] {
     },
     {
       type: "function",
-      name: "create_new_codex_project",
-      description:
-        "Create a new Codex voice project with a fresh Documents workspace folder, without creating a chat/thread or submitting work. Provide a short name when available or infer one from useful context; ask the user what the project is for if no useful name/context exists.",
-      parameters: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-        },
-      },
-    },
-    {
-      type: "function",
       name: "create_new_codex_chat",
       description:
-        "Create a new chat/thread inside the current Codex voice project, make it active, and do not submit work to Codex. Requires a short clear name; ask the user what the chat is for if no useful name/context exists.",
+        "Create a new Codex chat/thread inside the current workspace, make it active, and do not submit work to Codex. Requires a short clear name; ask the user what the thread is for if no useful name/context exists.",
       parameters: {
         type: "object",
         properties: {
@@ -360,7 +348,7 @@ function realtimeTools(): unknown[] {
     {
       type: "function",
       name: "list_codex_chats",
-      description: "List chats/threads in the current Codex voice project.",
+      description: "List Codex chats/threads in the current workspace.",
       parameters: {
         type: "object",
         properties: {},
@@ -369,7 +357,7 @@ function realtimeTools(): unknown[] {
     {
       type: "function",
       name: "switch_codex_chat",
-      description: "Switch the active chat in the current Codex voice project by id or name.",
+      description: "Switch the active Codex chat/thread in the current workspace by id or name.",
       parameters: {
         type: "object",
         properties: {
@@ -381,7 +369,7 @@ function realtimeTools(): unknown[] {
     {
       type: "function",
       name: "get_codex_chat_status",
-      description: "Get updates/status for one chat or all chats in the current project.",
+      description: "Get updates/status for one Codex thread or all threads in the current workspace.",
       parameters: {
         type: "object",
         properties: {
@@ -393,36 +381,16 @@ function realtimeTools(): unknown[] {
     {
       type: "function",
       name: "show_open_codex_chats",
-      description: "Open the current project's chat drawer, equivalent to clicking the active project card.",
+      description: "Open the current workspace's thread drawer.",
       parameters: {
         type: "object",
         properties: {},
-      },
-    },
-    {
-      type: "function",
-      name: "list_recent_codex_projects",
-      description: "List recent Codex voice projects that can be summarized or continued.",
-      parameters: {
-        type: "object",
-        properties: {},
-      },
-    },
-    {
-      type: "function",
-      name: "continue_codex_project",
-      description: "Resume an existing Codex voice project by id, or the most recent project if no id is supplied.",
-      parameters: {
-        type: "object",
-        properties: {
-          projectId: { type: "string" },
-        },
       },
     },
     {
       type: "function",
       name: "summarize_recent_project",
-      description: "Ask Codex to summarize a recent project or chat, then return that summary for voice narration.",
+      description: "Ask Codex to summarize a workspace thread, then return that summary for voice narration.",
       parameters: {
         type: "object",
         properties: {

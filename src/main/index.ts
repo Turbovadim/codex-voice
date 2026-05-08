@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import path from "node:path";
 import { config as loadDotEnv } from "dotenv";
 import { clearOpenAiApiKey, saveOpenAiApiKey } from "./apiKeyStore";
@@ -132,7 +132,7 @@ function normalizeAppEvent(payload: AppEvent): AppEvent {
 }
 
 async function boot(): Promise<void> {
-  const store = new ProjectStore();
+  const store = new ProjectStore(path.join(app.getPath("userData"), "workspace-links"));
   const codex = new CodexBridge();
   orchestrator = new VoiceCodexOrchestrator(store, codex);
 
@@ -184,6 +184,18 @@ function registerIpc(): void {
   });
   registerIpcHandler("app:logEvent", (_event, payload: AppEvent) => {
     publishEvent(normalizeAppEvent(payload));
+  });
+  registerIpcHandler("projects:addWorkspace", async (event) => {
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const options: Electron.OpenDialogOptions = {
+      title: "Add Codex project",
+      buttonLabel: "Add Project",
+      properties: ["openDirectory", "createDirectory"],
+    };
+    const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+    const folderPath = result.filePaths[0];
+    if (result.canceled || !folderPath) return null;
+    return requireOrchestrator().attachWorkspace(folderPath);
   });
   registerIpcHandler(
     "projects:create",

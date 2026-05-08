@@ -387,23 +387,18 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
     return { ok: true, message: "Updated Codex permission settings.", settings };
   }
 
-  if (name === "create_new_codex_project") {
-    const project = await window.codexVoice.createProject(optionalString(args.name));
-    return { ok: true, project };
-  }
-
   if (name === "create_new_codex_chat") {
     const project = await window.codexVoice.createChat(stringArg(args.name));
     return { ok: true, message: `Created chat ${stringArg(args.name)}.`, project, activeChat: activeChat(visibleChats(project.chats), project.activeChatId) };
   }
 
   if (name === "list_codex_chats") {
+    const chats = await window.codexVoice.listChats();
     const state = await window.codexVoice.getState();
-    const activeProject = state.activeProject;
     return {
       ok: true,
       activeChatId: state.runtime.activeChatId,
-      chats: visibleChats(activeProject?.chats ?? []),
+      chats: visibleChats(chats),
       statuses: state.runtime.chats,
     };
   }
@@ -423,9 +418,9 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
 
   if (name === "show_open_codex_chats") {
     await window.codexVoice.showProjectChats(true);
+    const chats = await window.codexVoice.listChats();
     const state = await window.codexVoice.getState();
-    const activeProject = state.activeProject;
-    return { ok: true, message: "Showing open chats.", chats: visibleChats(activeProject?.chats ?? []), statuses: state.runtime.chats };
+    return { ok: true, message: "Showing workspace threads.", chats: visibleChats(chats), statuses: state.runtime.chats };
   }
 
   if (name === "list_recent_codex_projects") {
@@ -448,7 +443,7 @@ async function callVoiceTool(name: string, args: Record<string, unknown>): Promi
   if (name === "continue_codex_project") {
     const state = await window.codexVoice.getState();
     const projectId = optionalString(args.projectId) || state.projects[0]?.id;
-    if (!projectId) throw new Error("No recent Codex voice projects exist yet.");
+    if (!projectId) throw new Error("No linked Codex workspaces exist yet.");
     const project = await window.codexVoice.resumeProject(projectId);
     return { ok: true, project };
   }
